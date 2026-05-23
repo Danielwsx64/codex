@@ -84,10 +84,18 @@ git); o cdx mantém um registro multi-catálogo em
       tab-complete; registra `:library` (stub se a tela Library
       ainda não estiver pronta), `:catalogs`, `:quit`/`:q`; demais
       seções registram-se em seus milestones
-- [ ] `cdx add <file>` — importa EPUB/PDF/MOBI, extrai metadados básicos
-- [ ] `cdx ls` — lista livros (id, título, autor)
-- [ ] `cdx show <id>` — exibe metadados detalhados
-- [ ] `cdx rm <id>` — remove do catálogo (com flag pra apagar arquivo)
+- [x] `cdx add <file>...` — importa EPUB/PDF/MOBI/AZW3, extrai metadados
+      básicos e renomeia o arquivo armazenado como `Author_-_Title.ext`
+      sanitizado; formatos fora da lista são recusados com mensagem clara
+- [x] `cdx ls` — lista livros (id, título, autor, formato)
+- [x] `cdx inspect <id|título>` — exibe metadados detalhados; aceita id
+      numérico ou título exato (case-insensitive); título ambíguo retorna
+      erro listando os ids candidatos
+    - [ ] autocomplete dinâmico de nome/id no shell — adiado pra v1.0
+          (`clap_complete` feature `unstable-dynamic`)
+- [x] `cdx rm <id|título>` — remove do catálogo e apaga o arquivo; flag
+      `--keep` move o arquivo pra cwd em vez de apagar (sufixa `.1`, `.2`
+      em colisão)
 - [x] Logging configurável via `RUST_LOG` (`tracing-subscriber` lê
       `RUST_LOG`; `-v/-vv/-vvv` ajusta o default sem precisar exportar)
 - [x] Tela de boas vindas em módulo compartilhado, exibida quando `cdx`
@@ -155,7 +163,9 @@ com seus comandos CLI.
 ## v1.0 — Estável
 
 - [ ] Man page (`cdx.1`)
-- [ ] Shell completions (bash/zsh/fish)
+- [ ] Shell completions (bash/zsh/fish) — inclui completion **dinâmica**
+      de argumentos posicionais (`cdx inspect <TAB>`, `cdx rm <TAB>`)
+      consultando o catálogo via `clap_complete::engine::ArgValueCompleter`
 - [ ] Pacote `cargo install codex` publicado no crates.io
 - [ ] CI: testes + clippy + fmt
 - [ ] Cobertura mínima de testes de integração

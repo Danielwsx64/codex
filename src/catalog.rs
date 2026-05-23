@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use thiserror::Error;
 
+pub mod books;
 pub mod handlers;
 pub mod render;
 pub mod schema;

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand};
 
+pub mod books;
 pub mod catalog;
 
 #[derive(Parser, Debug)]
@@ -49,6 +50,36 @@ pub enum Command {
     Tui,
     #[command(subcommand, about = "Manage cdx catalogs (libraries)")]
     Catalog(CatalogCmd),
+    #[command(
+        about = "Import one or more ebook files (epub, pdf, mobi, azw3) into the current catalog"
+    )]
+    Add {
+        #[arg(required = true, value_name = "PATH", num_args = 1.., help = "One or more ebook files to import")]
+        paths: Vec<PathBuf>,
+    },
+    #[command(about = "List books in the current catalog")]
+    Ls,
+    #[command(about = "Show metadata for a book (by numeric id or title)")]
+    Inspect {
+        #[arg(
+            value_name = "ID_OR_TITLE",
+            help = "Numeric id, or exact title (case-insensitive)"
+        )]
+        target: String,
+    },
+    #[command(about = "Remove a book from the catalog; by default deletes its file")]
+    Rm {
+        #[arg(
+            value_name = "ID_OR_TITLE",
+            help = "Numeric id, or exact title (case-insensitive)"
+        )]
+        target: String,
+        #[arg(
+            long,
+            help = "Move the book file to the current working directory instead of deleting it"
+        )]
+        keep: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

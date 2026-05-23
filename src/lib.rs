@@ -4,6 +4,7 @@
 pub mod catalog;
 pub mod cli;
 pub mod config;
+pub mod import;
 pub mod tui;
 pub mod welcome;
 
@@ -24,6 +25,28 @@ pub fn run() -> Result<()> {
         Some(Command::Catalog(cmd)) => {
             cli::catalog::dispatch(cmd, cli.data_dir.as_deref(), cli.json)
         }
+        Some(Command::Add { paths }) => cli::books::dispatch_add(
+            paths,
+            cli.data_dir.as_deref(),
+            cli.catalog.as_deref(),
+            cli.json,
+        ),
+        Some(Command::Ls) => {
+            cli::books::dispatch_ls(cli.data_dir.as_deref(), cli.catalog.as_deref(), cli.json)
+        }
+        Some(Command::Inspect { target }) => cli::books::dispatch_inspect(
+            target,
+            cli.data_dir.as_deref(),
+            cli.catalog.as_deref(),
+            cli.json,
+        ),
+        Some(Command::Rm { target, keep }) => cli::books::dispatch_rm(
+            target,
+            keep,
+            cli.data_dir.as_deref(),
+            cli.catalog.as_deref(),
+            cli.json,
+        ),
         None => print_welcome(),
     }
 }

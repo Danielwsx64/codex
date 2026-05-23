@@ -40,4 +40,21 @@ impl Fixture {
         c.arg("--json");
         c
     }
+
+    /// Initialize a catalog named `lib` at `work_dir/lib` and set it as current.
+    /// Returns the absolute path of the catalog directory.
+    pub fn init_lib(&self) -> PathBuf {
+        let lib = self.lib_path("lib");
+        self.cdx()
+            .args(["catalog", "init", "lib"])
+            .arg(&lib)
+            .assert()
+            .success();
+        lib
+    }
+
+    pub fn fixture(name: &str) -> PathBuf {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        manifest.join("tests").join("fixtures").join(name)
+    }
 }

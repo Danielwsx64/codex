@@ -1,8 +1,12 @@
 use std::io::{self, Write};
+use std::path::Path;
 
 use serde::Serialize;
 use tabwriter::TabWriter;
 
+use crate::catalog::books::{
+    AddOutcome as BookAddOutcome, AddStatus, Book, RmOutcome as BookRmOutcome,
+};
 use crate::catalog::handlers::{AddOutcome, CatalogRow, InitOutcome, RmOutcome, UseOutcome};
 
 #[derive(Serialize)]
@@ -167,6 +171,196 @@ pub fn render_rm_jsonl<W: Write>(outcome: &RmOutcome, w: &mut W) -> io::Result<(
         became_current: None,
         purged: Some(outcome.purged),
         cleared_current: Some(outcome.cleared_current),
+    };
+    serde_json::to_writer(&mut *w, &value)?;
+    writeln!(w)
+}
+
+// --- Book renderers -----------------------------------------------------
+
+#[derive(Serialize)]
+struct BookAddJson<'a> {
+    source: &'a Path,
+    status: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stored_path: Option<&'a Path>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'a str>,
+}
+
+pub fn render_book_add_human<W: Write>(outcome: &BookAddOutcome, w: &mut W) -> io::Result<()> {
+    if outcome.rows.is_empty() {
+        return Ok(());
+    }
+    for row in &outcome.rows {
+        match &row.status {
+            AddStatus::Imported => {
+                let id = row.book_id.unwrap_or(0);
+                let stored = row
+                    .stored_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                writeln!(
+                    w,
+                    "Imported `{src}` as id {id} ({stored})",
+                    src = row.source.display(),
+                )?;
+            }
+            AddStatus::Failed { reason } => {
+                writeln!(
+                    w,
+                    "Failed to import `{src}`: {reason}",
+                    src = row.source.display(),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn render_book_add_jsonl<W: Write>(outcome: &BookAddOutcome, w: &mut W) -> io::Result<()> {
+    for row in &outcome.rows {
+        let (status, reason) = match &row.status {
+            AddStatus::Imported => ("imported", None),
+            AddStatus::Failed { reason } => ("failed", Some(reason.as_str())),
+        };
+        let value = BookAddJson {
+            source: &row.source,
+            status,
+            id: row.book_id,
+            stored_path: row.stored_path.as_deref(),
+            reason,
+        };
+        serde_json::to_writer(&mut *w, &value)?;
+        writeln!(w)?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct BookLsJson<'a> {
+    id: i64,
+    title: &'a str,
+    author: Option<&'a str>,
+    format: &'a str,
+}
+
+pub fn render_book_ls_human<W: Write>(rows: &[Book], w: &mut W) -> io::Result<()> {
+    if rows.is_empty() {
+        writeln!(w, "No books in the current catalog. Try `cdx add <file>`.")?;
+        return Ok(());
+    }
+    let mut tw = TabWriter::new(w).padding(2);
+    writeln!(&mut tw, "ID\tTITLE\tAUTHOR\tFORMAT")?;
+    for b in rows {
+        let author = b.author.as_deref().unwrap_or("");
+        writeln!(
+            &mut tw,
+            "{id}\t{title}\t{author}\t{fmt}",
+            id = b.id,
+            title = b.title,
+            fmt = b.format,
+        )?;
+    }
+    tw.flush()
+}
+
+pub fn render_book_ls_jsonl<W: Write>(rows: &[Book], w: &mut W) -> io::Result<()> {
+    for b in rows {
+        let value = BookLsJson {
+            id: b.id,
+            title: &b.title,
+            author: b.author.as_deref(),
+            format: &b.format,
+        };
+        serde_json::to_writer(&mut *w, &value)?;
+        writeln!(w)?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct BookInspectJson<'a> {
+    id: i64,
+    title: &'a str,
+    author: Option<&'a str>,
+    format: &'a str,
+    file_path: &'a Path,
+    added_at: &'a str,
+}
+
+pub fn render_book_inspect_human<W: Write>(
+    book: &Book,
+    absolute_path: &Path,
+    w: &mut W,
+) -> io::Result<()> {
+    let mut tw = TabWriter::new(w).padding(2);
+    writeln!(&mut tw, "id\t{id}", id = book.id)?;
+    writeln!(&mut tw, "title\t{}", book.title)?;
+    writeln!(
+        &mut tw,
+        "author\t{}",
+        book.author.as_deref().unwrap_or("(unknown)")
+    )?;
+    writeln!(&mut tw, "format\t{}", book.format)?;
+    writeln!(&mut tw, "file\t{}", absolute_path.display())?;
+    writeln!(&mut tw, "added\t{}", book.added_at)?;
+    tw.flush()
+}
+
+pub fn render_book_inspect_jsonl<W: Write>(
+    book: &Book,
+    absolute_path: &Path,
+    w: &mut W,
+) -> io::Result<()> {
+    let value = BookInspectJson {
+        id: book.id,
+        title: &book.title,
+        author: book.author.as_deref(),
+        format: &book.format,
+        file_path: absolute_path,
+        added_at: &book.added_at,
+    };
+    serde_json::to_writer(&mut *w, &value)?;
+    writeln!(w)
+}
+
+#[derive(Serialize)]
+struct BookRmJson<'a> {
+    action: &'a str,
+    id: i64,
+    title: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kept_at: Option<&'a Path>,
+}
+
+pub fn render_book_rm_human<W: Write>(outcome: &BookRmOutcome, w: &mut W) -> io::Result<()> {
+    match &outcome.kept_at {
+        Some(path) => writeln!(
+            w,
+            "Removed book id {id} (`{title}`); file kept at {p}",
+            id = outcome.book.id,
+            title = outcome.book.title,
+            p = path.display(),
+        ),
+        None => writeln!(
+            w,
+            "Removed book id {id} (`{title}`) and deleted its file",
+            id = outcome.book.id,
+            title = outcome.book.title,
+        ),
+    }
+}
+
+pub fn render_book_rm_jsonl<W: Write>(outcome: &BookRmOutcome, w: &mut W) -> io::Result<()> {
+    let value = BookRmJson {
+        action: "book_rm",
+        id: outcome.book.id,
+        title: &outcome.book.title,
+        kept_at: outcome.kept_at.as_deref(),
     };
     serde_json::to_writer(&mut *w, &value)?;
     writeln!(w)
