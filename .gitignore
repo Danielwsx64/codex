@@ -1,0 +1,17 @@
+/target
+
+# IDEs / editors
+.vscode/
+.idea/
+*.swp
+
+# Local env
+.env
+.env.local
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# cdx runtime data (caso usemos dir local em dev)
+.cdx-data/

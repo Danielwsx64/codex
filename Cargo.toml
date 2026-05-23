@@ -1,0 +1,20 @@
+[package]
+name = "codex"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+authors = ["Daniel Lima <daniel.lima@infleet.com.br>"]
+description = "Terminal-first ebook library and ereader manager"
+license = "MIT"
+readme = "README.md"
+repository = ""
+keywords = ["ebook", "kindle", "cli", "library", "calibre"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "cdx"
+path = "src/main.rs"
+
+[dependencies]
+
+[dev-dependencies]
