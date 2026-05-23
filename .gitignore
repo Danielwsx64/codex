@@ -15,3 +15,4 @@ Thumbs.db
 
 # cdx runtime data (caso usemos dir local em dev)
 .cdx-data/
+/tmp

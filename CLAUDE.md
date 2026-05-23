@@ -19,10 +19,13 @@ When referring to commands in docs and code, use `cdx` (e.g. `cdx ls`,
 ## Core direction
 
 - **Terminal-first**: no GUI. All flows must work over SSH.
-- **Independent catalog**: cdx maintains its own SQLite catalog under
-  `$XDG_DATA_HOME/cdx` (typically `~/.local/share/cdx`). It does **not**
-  depend on Calibre's `metadata.db`. Importing from a Calibre library is
-  a planned interop feature, not a base requirement.
+- **Multi-catalog registry**: cdx keeps a TOML registry at
+  `$XDG_CONFIG_HOME/cdx/config.toml` listing the registered catalogs
+  (name, path, description) plus a `current` pointer. Each catalog is
+  a directory the user chose (so it can be a git repo): a `catalog.db`
+  SQLite file plus a `books/<id>/` tree for the binary files. cdx does
+  **not** depend on Calibre's `metadata.db`. Importing from a Calibre
+  library is a planned interop feature, not a base requirement.
 - **Composable**: `--json` is a first-class flag on every read command and emits **JSONL** — one JSON object per line, no surrounding array. This streams through `jq -c`, `head`, and `fzf --preview` without buffering.
 
 ## Where things live
@@ -80,13 +83,14 @@ work targets `v0.1 — MVP catálogo`.
 - **Connections are passed explicitly**, never via a global/`OnceLock`. Every function that touches the DB takes `conn: &Connection` (or `&mut Connection` for transactions). This keeps tests trivial — each test opens a fresh DB in `tempfile::tempdir()`.
 - Use `conn.prepare_cached(...)` for hot reads inside loops.
 - **Transactions are explicit**: any write that touches more than one row or table opens `conn.transaction()?` and commits at the end. Single-statement writes can run directly on the connection.
-- Migrations via `rusqlite_migration`. SQL files live under `migrations/`, embedded with `include_str!`, and the migrator runs on `cdx init` and on every command startup (idempotent).
+- Migrations via `rusqlite_migration`. SQL files live under `migrations/`, embedded with `include_str!`, and the migrator runs on `cdx catalog init` and on every command startup against the active catalog (idempotent).
 
 ## Paths
 
-- Use the `directories` crate (`ProjectDirs::from("", "", "cdx")`) to resolve `$XDG_DATA_HOME/cdx`. Don't read `$XDG_DATA_HOME` by hand — the crate already handles macOS/Windows fallbacks.
+- Use the `directories` crate (`ProjectDirs::from("", "", "cdx")`) to resolve the cdx **config dir** (`$XDG_CONFIG_HOME/cdx` on Linux). That dir holds the catalog registry (`config.toml`) — *not* the catalogs themselves. Don't read `$XDG_CONFIG_HOME` by hand — the crate already handles macOS/Windows fallbacks.
+- Each registered catalog lives at a user-chosen path (resolved from the registry). The on-disk layout is `<catalog>/catalog.db` plus `<catalog>/books/<book-id>/<file>`.
 - File paths are `Path` / `PathBuf` everywhere. **Never `String` for paths.** At OS boundaries, accept `&Path` and use `.display()` only for logging.
-- The `--data-dir` flag overrides the resolved path; all DB and catalog operations consume whatever the parser produced, so integration tests pass a `tempdir` and the code under test is unchanged.
+- The `--data-dir` flag overrides the resolved **config dir** (where the registry lives), not the catalog dir. Integration tests pass a `tempdir` here so they never touch `$XDG_CONFIG_HOME`.
 
 ## Logging (`tracing`)
 

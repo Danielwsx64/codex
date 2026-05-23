@@ -15,20 +15,36 @@ também a tela TUI correspondente.
 
 Exceções (raras, sempre justificadas):
 
-- Setup imperativo (`cdx init`) — não há contraparte TUI natural.
+- Setup imperativo (`cdx catalog init/add/use/rm`) — one-shots de
+  configuração do registro de catálogos; uma tela TUI adicionaria
+  fricção pra fluxos que são essencialmente "registrar path / trocar
+  atual". A tela "Catalogs" pode entrar como startup da TUI quando
+  fizer sentido (>1 catálogo registrado).
 - Leitor de livros (v0.8) — só faz sentido na TUI.
 
 ## v0.1 — MVP catálogo
 
-Catálogo local independente, sem device sync, sem Calibre.
+Catálogo local independente, sem device sync, sem Calibre. O usuário
+escolhe onde cada catálogo vive (path qualquer — pode ser um repo
+git); o cdx mantém um registro multi-catálogo em
+`$XDG_CONFIG_HOME/cdx/config.toml` com o catálogo "atual".
 
-- [ ] Definir esquema do catálogo (SQLite local em `$XDG_DATA_HOME/cdx`)
-- [ ] `cdx init` — cria diretório de dados e DB
+- [x] Definir esquema inicial do catálogo (SQLite — tabela `books`)
+- [x] `cdx catalog init <name> <path>` — cria DB + `books/` no path e
+      registra o catálogo
+- [x] `cdx catalog add <name> <path>` — registra um catálogo já
+      existente no path informado
+- [x] `cdx catalog ls` — lista catálogos registrados (marca atual e
+      `(missing)` quando o path sumiu do disco)
+- [x] `cdx catalog use <name>` — troca o catálogo atual
+- [x] `cdx catalog rm <name>` — remove do registro (flag `--purge`
+      pra apagar os arquivos)
 - [ ] `cdx add <file>` — importa EPUB/PDF/MOBI, extrai metadados básicos
 - [ ] `cdx ls` — lista livros (id, título, autor)
 - [ ] `cdx show <id>` — exibe metadados detalhados
 - [ ] `cdx rm <id>` — remove do catálogo (com flag pra apagar arquivo)
-- [ ] Logging configurável via `RUST_LOG`
+- [x] Logging configurável via `RUST_LOG` (`tracing-subscriber` lê
+      `RUST_LOG`; `-v/-vv/-vvv` ajusta o default sem precisar exportar)
 - [x] Tela de boas vindas em módulo compartilhado, exibida quando `cdx`
       roda sem subcomando (mesmo conteúdo será reusado pela TUI)
 - [x] `cdx tui` — esqueleto ratatui + tela de boas vindas reusando o
