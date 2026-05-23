@@ -13,14 +13,45 @@ de domínio — a divergência fica restrita à camada de apresentação.
 Por isso os itens abaixo, quando listam apenas o verbo CLI, implicam
 também a tela TUI correspondente.
 
-Exceções (raras, sempre justificadas):
+Exceção (rara, sempre justificada):
 
-- Setup imperativo (`cdx catalog init/add/use/rm`) — one-shots de
-  configuração do registro de catálogos; uma tela TUI adicionaria
-  fricção pra fluxos que são essencialmente "registrar path / trocar
-  atual". A tela "Catalogs" pode entrar como startup da TUI quando
-  fizer sentido (>1 catálogo registrado).
 - Leitor de livros (v0.8) — só faz sentido na TUI.
+
+## TUI: navegação global
+
+A tela de abertura da TUI (mesma da welcome reusada do módulo
+compartilhado) é o ponto de entrada e lista as **seções top-level**
+como links navegáveis (↑/↓ percorrem a lista, Enter entra).
+Cada seção corresponde a um conjunto coerente de verbos CLI:
+
+1. **Library** — listar/visualizar/remover livros (`cdx ls`,
+   `cdx show`, `cdx rm`) [v0.1]
+2. **Search** — busca full-text + filtros (`cdx search`) [v0.3]
+3. **Catalogs** — registry de catálogos (`cdx catalog ls`/`use`/
+   `rm` + wizard de `init`/`add`) [v0.1]
+4. **Devices** — sync com ereaders (`cdx device ls`, `push`, `pull`,
+   `sync`) [v0.4]
+
+Seções de milestones futuros aparecem na lista com sufixo
+"(v0.X)" e ficam desabilitadas (Enter sobre elas não navega) até
+serem entregues no milestone correspondente.
+
+**Atalho global — command palette via `:`**: de qualquer tela, `:`
+abre um input no rodapé (estilo vim). Comandos disponíveis:
+`:library`, `:catalogs`, `:search`, `:devices`, mais `:quit`
+(alias de `q`, convenção vim — não é rebind do exit, é uma forma
+alternativa). Tab completa pelo prefixo único mais curto (`:l`,
+`:c`, `:s`, `:d`, `:q`). Enter executa; Esc cancela e volta o
+foco pra tela ativa.
+
+Restrições:
+
+- As teclas reservadas (`q`, `Ctrl+C` pra sair; `Esc`, `Enter` pra
+  navegação in-screen) seguem valendo. O palette só captura
+  texto enquanto está aberto — fora dele, `q` continua sendo o
+  exit imediato.
+- O palette **não substitui** o help contextual `?`, que continua
+  per-screen documentando atalhos da tela ativa.
 
 ## v0.1 — MVP catálogo
 
@@ -39,6 +70,20 @@ git); o cdx mantém um registro multi-catálogo em
 - [x] `cdx catalog use <name>` — troca o catálogo atual
 - [x] `cdx catalog rm <name>` — remove do registro (flag `--purge`
       pra apagar os arquivos)
+- [x] TUI: tela "Catalogs" — lista catálogos (atual marcado,
+      `(missing)` quando o path sumiu), permite `use` (Enter) e `rm`
+      (com confirmação + opção de purgar). A welcome é sempre a home;
+      a tela Catalogs é acessada via menu ou `:catalogs`.
+- [x] TUI: wizard "New catalog" — fluxo único que cobre `init` (cria
+      DB + `books/`) e `add` (registra path existente), com nome,
+      path e descrição opcional
+- [x] TUI: estender welcome com menu das 4 seções top-level
+      (Library e Catalogs ativas; Search "(v0.3)" e Devices "(v0.4)"
+      desabilitadas até seus milestones)
+- [x] TUI: command palette `:` — overlay no rodapé com input +
+      tab-complete; registra `:library` (stub se a tela Library
+      ainda não estiver pronta), `:catalogs`, `:quit`/`:q`; demais
+      seções registram-se em seus milestones
 - [ ] `cdx add <file>` — importa EPUB/PDF/MOBI, extrai metadados básicos
 - [ ] `cdx ls` — lista livros (id, título, autor)
 - [ ] `cdx show <id>` — exibe metadados detalhados
@@ -63,6 +108,8 @@ git); o cdx mantém um registro multi-catálogo em
 - [ ] `cdx search <query>` — full-text em título/autor/tags
 - [ ] Flags `--author`, `--tag`, `--series`, `--rating`
 - [ ] Saída `--json` pra compor com `jq`/scripts
+- [ ] TUI: registrar `:search` no command palette + ativar link
+      "Search" na welcome
 
 ## v0.4 — Kindle sync (USB)
 
@@ -71,6 +118,8 @@ git); o cdx mantém um registro multi-catálogo em
 - [ ] `cdx push <id>` — copia arquivo do catálogo pro Kindle
 - [ ] `cdx pull <path>` — importa livro do Kindle pro catálogo
 - [ ] `cdx sync` — diff bidirecional com confirmação
+- [ ] TUI: registrar `:devices` no command palette + ativar link
+      "Devices" na welcome
 
 ## v0.5 — Conversão de formatos
 

@@ -1,0 +1,403 @@
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::backend::Backend;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
+use ratatui::{Frame, Terminal};
+
+use crate::config::Registry;
+use crate::tui::catalogs;
+use crate::tui::new_catalog;
+use crate::tui::palette;
+use crate::tui::welcome;
+use crate::tui::widgets::{outer_block, render_default_footer, render_status, StatusMessage};
+
+pub enum Screen {
+    Welcome(welcome::State),
+    Catalogs(catalogs::State),
+    NewCatalog(new_catalog::State),
+    LibraryStub,
+}
+
+pub struct App {
+    pub config_dir: PathBuf,
+    pub registry: Registry,
+    pub screen: Screen,
+    pub palette: Option<palette::State>,
+    pub status: Option<StatusMessage>,
+    pub should_quit: bool,
+}
+
+impl App {
+    pub fn new(config_dir: PathBuf) -> Result<Self> {
+        let registry = Registry::load(&config_dir).with_context(|| {
+            format!(
+                "failed to load catalog registry from {}",
+                config_dir.display()
+            )
+        })?;
+        let screen = Screen::Welcome(welcome::State::new());
+        Ok(Self {
+            config_dir,
+            registry,
+            screen,
+            palette: None,
+            status: None,
+            should_quit: false,
+        })
+    }
+
+    pub fn run<B: Backend>(mut self, terminal: &mut Terminal<B>) -> Result<()> {
+        while !self.should_quit {
+            terminal.draw(|f| self.render(f))?;
+            let event = event::read()?;
+            self.dispatch(event)?;
+        }
+        Ok(())
+    }
+
+    pub fn dispatch(&mut self, event: Event) -> Result<()> {
+        let Event::Key(key) = event else {
+            return Ok(());
+        };
+        // Ignore key release/repeat to avoid double-firing on terminals that emit them.
+        if key.kind != crossterm::event::KeyEventKind::Press {
+            return Ok(());
+        }
+
+        if self.palette.is_some() {
+            self.handle_palette(key);
+            return Ok(());
+        }
+
+        if !self.captures_text_input() && is_exit_key(&key) {
+            self.should_quit = true;
+            return Ok(());
+        }
+
+        self.handle_screen(key);
+        Ok(())
+    }
+
+    fn captures_text_input(&self) -> bool {
+        match &self.screen {
+            Screen::NewCatalog(s) => new_catalog::captures_text_input(s),
+            _ => false,
+        }
+    }
+
+    fn handle_palette(&mut self, key: KeyEvent) {
+        let Some(state) = self.palette.as_mut() else {
+            return;
+        };
+        match palette::handle_key(state, key) {
+            palette::PaletteAction::None => {}
+            palette::PaletteAction::Close => {
+                self.palette = None;
+            }
+            palette::PaletteAction::Execute(cmd) => {
+                self.palette = None;
+                self.apply_palette_command(cmd);
+            }
+        }
+    }
+
+    fn apply_palette_command(&mut self, cmd: palette::Command) {
+        match cmd {
+            palette::Command::Quit => {
+                self.should_quit = true;
+            }
+            palette::Command::Library => {
+                self.screen = Screen::LibraryStub;
+            }
+            palette::Command::Catalogs => {
+                self.screen = Screen::Catalogs(catalogs::State::from_registry(&self.registry));
+            }
+        }
+    }
+
+    fn handle_screen(&mut self, key: KeyEvent) {
+        self.status = None;
+        match &mut self.screen {
+            Screen::Welcome(state) => {
+                let action = welcome::handle_key(state, key);
+                self.apply_welcome_action(action);
+            }
+            Screen::Catalogs(state) => {
+                let action = catalogs::handle_key(state, key, &mut self.registry, &self.config_dir);
+                self.apply_catalogs_action(action);
+            }
+            Screen::NewCatalog(state) => {
+                let action =
+                    new_catalog::handle_key(state, key, &mut self.registry, &self.config_dir);
+                self.apply_wizard_action(action);
+            }
+            Screen::LibraryStub => match key.code {
+                KeyCode::Esc => self.screen = Screen::Welcome(welcome::State::new()),
+                KeyCode::Char(':') => self.palette = Some(palette::State::new()),
+                _ => {}
+            },
+        }
+    }
+
+    fn apply_welcome_action(&mut self, action: welcome::WelcomeAction) {
+        match action {
+            welcome::WelcomeAction::None => {}
+            welcome::WelcomeAction::OpenPalette => {
+                self.palette = Some(palette::State::new());
+            }
+            welcome::WelcomeAction::Enter(welcome::Section::Library) => {
+                self.screen = Screen::LibraryStub;
+            }
+            welcome::WelcomeAction::Enter(welcome::Section::Catalogs) => {
+                self.screen = Screen::Catalogs(catalogs::State::from_registry(&self.registry));
+            }
+            welcome::WelcomeAction::Enter(_) => {}
+        }
+    }
+
+    fn apply_catalogs_action(&mut self, action: catalogs::CatalogsAction) {
+        match action {
+            catalogs::CatalogsAction::None => {}
+            catalogs::CatalogsAction::Back => {
+                self.screen = Screen::Welcome(welcome::State::new());
+            }
+            catalogs::CatalogsAction::OpenWizard => {
+                self.screen =
+                    Screen::NewCatalog(new_catalog::State::new(new_catalog::Origin::Catalogs));
+            }
+            catalogs::CatalogsAction::OpenPalette => {
+                self.palette = Some(palette::State::new());
+            }
+            catalogs::CatalogsAction::Status(s) => {
+                self.status = Some(s);
+            }
+        }
+    }
+
+    fn apply_wizard_action(&mut self, action: new_catalog::WizardAction) {
+        match action {
+            new_catalog::WizardAction::None => {}
+            new_catalog::WizardAction::Cancel(origin) => {
+                self.screen = match origin {
+                    new_catalog::Origin::Welcome => Screen::Welcome(welcome::State::new()),
+                    new_catalog::Origin::Catalogs => {
+                        Screen::Catalogs(catalogs::State::from_registry(&self.registry))
+                    }
+                };
+            }
+            new_catalog::WizardAction::Submitted(_, status) => {
+                self.screen = Screen::Catalogs(catalogs::State::from_registry(&self.registry));
+                self.status = Some(status);
+            }
+            new_catalog::WizardAction::OpenPalette => {
+                self.palette = Some(palette::State::new());
+            }
+        }
+    }
+
+    pub fn render(&mut self, frame: &mut Frame<'_>) {
+        let area = frame.area();
+        let block = outer_block("codex");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+
+        match &self.screen {
+            Screen::Welcome(state) => welcome::render(frame, chunks[0], state),
+            Screen::Catalogs(state) => catalogs::render(frame, chunks[0], state),
+            Screen::NewCatalog(state) => new_catalog::render(frame, chunks[0], state),
+            Screen::LibraryStub => render_library_stub(frame, chunks[0]),
+        }
+
+        if let Some(palette) = &self.palette {
+            palette::render(frame, chunks[1], palette);
+        } else if let Some(status) = &self.status {
+            render_status(frame, chunks[1], status);
+        } else {
+            render_default_footer(frame, chunks[1], footer_hint(&self.screen));
+        }
+    }
+}
+
+fn render_library_stub(frame: &mut Frame<'_>, area: Rect) {
+    let lines = vec![
+        Line::from(Span::styled(
+            "Library",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "coming soon — listing/show/remove for books arrives with `cdx ls`/`show`/`rm` in v0.1.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Esc back · : palette · q quit",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    let p = Paragraph::new(lines).alignment(Alignment::Center);
+    let h = u16::try_from(5).unwrap_or(5);
+    let v = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(h),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    frame.render_widget(p, v[1]);
+}
+
+fn footer_hint(screen: &Screen) -> &'static str {
+    match screen {
+        Screen::Welcome(_) => "↑↓ navigate · Enter select",
+        Screen::Catalogs(_) => "↑↓ select · Enter use · n new · d delete · Esc back",
+        Screen::NewCatalog(_) => "Tab next field · Enter submit · Esc cancel",
+        Screen::LibraryStub => "Esc back",
+    }
+}
+
+pub fn is_exit_key(key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('q') => true,
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => true,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyEvent, KeyEventKind};
+    use std::fs;
+    use tempfile::tempdir;
+
+    use crate::catalog::handlers;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn exit_keys_are_q_and_ctrl_c_only() {
+        assert!(is_exit_key(&key(KeyCode::Char('q'))));
+        assert!(is_exit_key(&ctrl(KeyCode::Char('c'))));
+        assert!(!is_exit_key(&key(KeyCode::Esc)));
+        assert!(!is_exit_key(&key(KeyCode::Enter)));
+        assert!(!is_exit_key(&key(KeyCode::Char('c'))));
+    }
+
+    #[test]
+    fn always_starts_on_welcome() {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        fs::create_dir_all(&cfg).unwrap();
+
+        let app = App::new(cfg.clone()).unwrap();
+        assert!(matches!(app.screen, Screen::Welcome(_)));
+
+        let mut reg = Registry::default();
+        handlers::handle_init(&mut reg, &cfg, "one", &dir.path().join("a"), None, false).unwrap();
+        handlers::handle_init(&mut reg, &cfg, "two", &dir.path().join("b"), None, true).unwrap();
+
+        let app = App::new(cfg).unwrap();
+        assert!(
+            matches!(app.screen, Screen::Welcome(_)),
+            "welcome must remain the home screen even with multiple catalogs registered"
+        );
+    }
+
+    #[test]
+    fn q_quits_on_welcome() {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        fs::create_dir_all(&cfg).unwrap();
+        let mut app = App::new(cfg).unwrap();
+        app.dispatch(Event::Key(key(KeyCode::Char('q')))).unwrap();
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn q_does_not_quit_when_palette_open() {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        fs::create_dir_all(&cfg).unwrap();
+        let mut app = App::new(cfg).unwrap();
+        app.dispatch(Event::Key(key(KeyCode::Char(':')))).unwrap();
+        assert!(app.palette.is_some());
+        app.dispatch(Event::Key(key(KeyCode::Char('q')))).unwrap();
+        assert!(!app.should_quit, "q should be typed into palette, not quit");
+        assert!(app.palette.is_some(), "palette should remain open");
+    }
+
+    #[test]
+    fn q_does_not_quit_when_wizard_text_field_focused() {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        fs::create_dir_all(&cfg).unwrap();
+        let mut app = App::new(cfg).unwrap();
+        // navigate to wizard via welcome → catalogs → n
+        // simpler: directly install wizard via apply_welcome_action path
+        app.screen = Screen::NewCatalog(new_catalog::State::new(new_catalog::Origin::Welcome));
+        app.dispatch(Event::Key(key(KeyCode::Char('q')))).unwrap();
+        assert!(!app.should_quit);
+        // q should have been typed into the name field
+        match &app.screen {
+            Screen::NewCatalog(s) => assert_eq!(s.name.value(), "q"),
+            _ => panic!("expected wizard"),
+        }
+    }
+
+    #[test]
+    fn palette_quit_command_sets_should_quit() {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        fs::create_dir_all(&cfg).unwrap();
+        let mut app = App::new(cfg).unwrap();
+        app.dispatch(Event::Key(key(KeyCode::Char(':')))).unwrap();
+        for ch in "quit".chars() {
+            app.dispatch(Event::Key(key(KeyCode::Char(ch)))).unwrap();
+        }
+        app.dispatch(Event::Key(key(KeyCode::Enter))).unwrap();
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn palette_catalogs_command_navigates() {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        fs::create_dir_all(&cfg).unwrap();
+        let mut app = App::new(cfg).unwrap();
+        app.dispatch(Event::Key(key(KeyCode::Char(':')))).unwrap();
+        for ch in "catalogs".chars() {
+            app.dispatch(Event::Key(key(KeyCode::Char(ch)))).unwrap();
+        }
+        app.dispatch(Event::Key(key(KeyCode::Enter))).unwrap();
+        assert!(app.palette.is_none());
+        assert!(matches!(app.screen, Screen::Catalogs(_)));
+    }
+}

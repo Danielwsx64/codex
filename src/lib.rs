@@ -20,7 +20,7 @@ pub fn run() -> Result<()> {
     init_tracing(cli.verbose);
 
     match cli.command {
-        Some(Command::Tui) => tui::run(),
+        Some(Command::Tui) => tui::run(cli.data_dir.as_deref()),
         Some(Command::Catalog(cmd)) => {
             cli::catalog::dispatch(cmd, cli.data_dir.as_deref(), cli.json)
         }
