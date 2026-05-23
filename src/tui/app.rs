@@ -3,14 +3,12 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::Backend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::{Frame, Terminal};
 
 use crate::config::Registry;
 use crate::tui::catalogs;
+use crate::tui::library;
 use crate::tui::new_catalog;
 use crate::tui::palette;
 use crate::tui::welcome;
@@ -20,7 +18,7 @@ pub enum Screen {
     Welcome(welcome::State),
     Catalogs(catalogs::State),
     NewCatalog(new_catalog::State),
-    LibraryStub,
+    Library(library::State),
 }
 
 pub struct App {
@@ -112,7 +110,7 @@ impl App {
                 self.should_quit = true;
             }
             palette::Command::Library => {
-                self.screen = Screen::LibraryStub;
+                self.screen = Screen::Library(library::State::load(&self.registry));
             }
             palette::Command::Catalogs => {
                 self.screen = Screen::Catalogs(catalogs::State::from_registry(&self.registry));
@@ -136,11 +134,10 @@ impl App {
                     new_catalog::handle_key(state, key, &mut self.registry, &self.config_dir);
                 self.apply_wizard_action(action);
             }
-            Screen::LibraryStub => match key.code {
-                KeyCode::Esc => self.screen = Screen::Welcome(welcome::State::new()),
-                KeyCode::Char(':') => self.palette = Some(palette::State::new()),
-                _ => {}
-            },
+            Screen::Library(state) => {
+                let action = library::handle_key(state, key);
+                self.apply_library_action(action);
+            }
         }
     }
 
@@ -151,7 +148,7 @@ impl App {
                 self.palette = Some(palette::State::new());
             }
             welcome::WelcomeAction::Enter(welcome::Section::Library) => {
-                self.screen = Screen::LibraryStub;
+                self.screen = Screen::Library(library::State::load(&self.registry));
             }
             welcome::WelcomeAction::Enter(welcome::Section::Catalogs) => {
                 self.screen = Screen::Catalogs(catalogs::State::from_registry(&self.registry));
@@ -174,6 +171,21 @@ impl App {
                 self.palette = Some(palette::State::new());
             }
             catalogs::CatalogsAction::Status(s) => {
+                self.status = Some(s);
+            }
+        }
+    }
+
+    fn apply_library_action(&mut self, action: library::LibraryAction) {
+        match action {
+            library::LibraryAction::None => {}
+            library::LibraryAction::Back => {
+                self.screen = Screen::Welcome(welcome::State::new());
+            }
+            library::LibraryAction::OpenPalette => {
+                self.palette = Some(palette::State::new());
+            }
+            library::LibraryAction::Status(s) => {
                 self.status = Some(s);
             }
         }
@@ -215,7 +227,7 @@ impl App {
             Screen::Welcome(state) => welcome::render(frame, chunks[0], state),
             Screen::Catalogs(state) => catalogs::render(frame, chunks[0], state),
             Screen::NewCatalog(state) => new_catalog::render(frame, chunks[0], state),
-            Screen::LibraryStub => render_library_stub(frame, chunks[0]),
+            Screen::Library(state) => library::render(frame, chunks[0], state),
         }
 
         if let Some(palette) = &self.palette {
@@ -228,42 +240,12 @@ impl App {
     }
 }
 
-fn render_library_stub(frame: &mut Frame<'_>, area: Rect) {
-    let lines = vec![
-        Line::from(Span::styled(
-            "Library",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "coming soon — listing/show/remove for books arrives with `cdx ls`/`show`/`rm` in v0.1.",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Esc back · : palette · q quit",
-            Style::default().fg(Color::DarkGray),
-        )),
-    ];
-    let p = Paragraph::new(lines).alignment(Alignment::Center);
-    let h = u16::try_from(5).unwrap_or(5);
-    let v = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(0),
-            Constraint::Length(h),
-            Constraint::Min(0),
-        ])
-        .split(area);
-    frame.render_widget(p, v[1]);
-}
-
 fn footer_hint(screen: &Screen) -> &'static str {
     match screen {
         Screen::Welcome(_) => "↑↓ navigate · Enter select",
         Screen::Catalogs(_) => "↑↓ select · Enter use · n new · d delete · Esc back",
         Screen::NewCatalog(_) => "Tab next field · Enter submit · Esc cancel",
-        Screen::LibraryStub => "Esc back",
+        Screen::Library(_) => "↑↓ select · i info · a add · d delete · Esc back",
     }
 }
 

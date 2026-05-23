@@ -11,6 +11,7 @@ use ratatui::Terminal;
 
 pub mod app;
 pub mod catalogs;
+pub mod library;
 pub mod new_catalog;
 pub mod palette;
 pub mod welcome;
