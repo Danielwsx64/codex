@@ -16,5 +16,11 @@ name = "cdx"
 path = "src/main.rs"
 
 [dependencies]
+anyhow = "1"
+clap = { version = "=4.5.20", features = ["derive"] }
+crossterm = "=0.28.1"
+ratatui = "=0.28.1"
 
 [dev-dependencies]
+assert_cmd = "=2.0.16"
+predicates = "=3.1.2"

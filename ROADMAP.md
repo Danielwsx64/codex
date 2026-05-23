@@ -4,6 +4,20 @@ Formato: milestones versionados. Cada release é um escopo fechado;
 quando todos os checks estão marcados, lança-se a versão e abre-se a
 próxima.
 
+## Princípio: paridade CLI ↔ TUI
+
+Toda feature exposta ao usuário ganha **duas interfaces na mesma
+milestone**: o subcomando CLI (`cdx <verbo>`) e a tela equivalente
+dentro da TUI (`cdx tui`). Os dois caminhos consomem o mesmo módulo
+de domínio — a divergência fica restrita à camada de apresentação.
+Por isso os itens abaixo, quando listam apenas o verbo CLI, implicam
+também a tela TUI correspondente.
+
+Exceções (raras, sempre justificadas):
+
+- Setup imperativo (`cdx init`) — não há contraparte TUI natural.
+- Leitor de livros (v0.8) — só faz sentido na TUI.
+
 ## v0.1 — MVP catálogo
 
 Catálogo local independente, sem device sync, sem Calibre.
@@ -15,6 +29,11 @@ Catálogo local independente, sem device sync, sem Calibre.
 - [ ] `cdx show <id>` — exibe metadados detalhados
 - [ ] `cdx rm <id>` — remove do catálogo (com flag pra apagar arquivo)
 - [ ] Logging configurável via `RUST_LOG`
+- [x] Tela de boas vindas em módulo compartilhado, exibida quando `cdx`
+      roda sem subcomando (mesmo conteúdo será reusado pela TUI)
+- [x] `cdx tui` — esqueleto ratatui + tela de boas vindas reusando o
+      módulo compartilhado (prova o ciclo CLI↔TUI; demais telas entram
+      junto com seus respectivos comandos nos milestones seguintes)
 
 ## v0.2 — Edição de metadados
 
@@ -55,6 +74,19 @@ Catálogo local independente, sem device sync, sem Calibre.
       existente (lê `metadata.db`)
 - [ ] Export de catálogo cdx em formato neutro (JSON/CSV)
 
+## v0.8 — TUI leitor
+
+Leitura de livros direto no terminal — única feature TUI-only do
+roadmap (cf. exceção declarada no princípio de paridade). As demais
+telas da TUI ficam distribuídas pelos milestones anteriores, junto
+com seus comandos CLI.
+
+- [ ] Renderização de EPUB (texto + paginação)
+- [ ] Renderização de TXT/Markdown
+- [ ] Persistir progresso de leitura por livro no catálogo
+- [ ] Navegação por capítulos / sumário
+- [ ] `?` abre help contextual com atalhos de teclado da tela ativa
+
 ## v1.0 — Estável
 
 - [ ] Man page (`cdx.1`)
@@ -69,4 +101,3 @@ Catálogo local independente, sem device sync, sem Calibre.
 - Sync via Wi-Fi (sem cabo)
 - News download / RSS-to-EPUB (à la Calibre recipes)
 - Plugin system
-- TUI mode (ratatui)
