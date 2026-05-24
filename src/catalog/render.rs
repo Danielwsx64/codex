@@ -246,6 +246,23 @@ struct BookLsJson<'a> {
     title: &'a str,
     author: Option<&'a str>,
     format: &'a str,
+    tags: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    series_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    series_index: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rating: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    publisher: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    published_date: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    isbn: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'a str>,
 }
 
 pub fn render_book_ls_human<W: Write>(rows: &[Book], w: &mut W) -> io::Result<()> {
@@ -254,12 +271,13 @@ pub fn render_book_ls_human<W: Write>(rows: &[Book], w: &mut W) -> io::Result<()
         return Ok(());
     }
     let mut tw = TabWriter::new(w).padding(2);
-    writeln!(&mut tw, "ID\tTITLE\tAUTHOR\tFORMAT")?;
+    writeln!(&mut tw, "ID\tTITLE\tAUTHOR\tTAGS\tFORMAT")?;
     for b in rows {
         let author = b.author.as_deref().unwrap_or("");
+        let tags = b.tags.join(", ");
         writeln!(
             &mut tw,
-            "{id}\t{title}\t{author}\t{fmt}",
+            "{id}\t{title}\t{author}\t{tags}\t{fmt}",
             id = b.id,
             title = b.title,
             fmt = b.format,
@@ -270,16 +288,29 @@ pub fn render_book_ls_human<W: Write>(rows: &[Book], w: &mut W) -> io::Result<()
 
 pub fn render_book_ls_jsonl<W: Write>(rows: &[Book], w: &mut W) -> io::Result<()> {
     for b in rows {
-        let value = BookLsJson {
-            id: b.id,
-            title: &b.title,
-            author: b.author.as_deref(),
-            format: &b.format,
-        };
+        let value = book_to_ls_json(b);
         serde_json::to_writer(&mut *w, &value)?;
         writeln!(w)?;
     }
     Ok(())
+}
+
+fn book_to_ls_json(b: &Book) -> BookLsJson<'_> {
+    BookLsJson {
+        id: b.id,
+        title: &b.title,
+        author: b.author.as_deref(),
+        format: &b.format,
+        tags: &b.tags,
+        series_name: b.series_name.as_deref(),
+        series_index: b.series_index,
+        rating: b.rating,
+        publisher: b.publisher.as_deref(),
+        language: b.language.as_deref(),
+        published_date: b.published_date.as_deref(),
+        isbn: b.isbn.as_deref(),
+        description: b.description.as_deref(),
+    }
 }
 
 #[derive(Serialize)]
@@ -290,6 +321,23 @@ struct BookInspectJson<'a> {
     format: &'a str,
     file_path: &'a Path,
     added_at: &'a str,
+    tags: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    series_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    series_index: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rating: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    publisher: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    published_date: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    isbn: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'a str>,
 }
 
 pub fn render_book_inspect_human<W: Write>(
@@ -308,6 +356,34 @@ pub fn render_book_inspect_human<W: Write>(
     writeln!(&mut tw, "format\t{}", book.format)?;
     writeln!(&mut tw, "file\t{}", absolute_path.display())?;
     writeln!(&mut tw, "added\t{}", book.added_at)?;
+    if !book.tags.is_empty() {
+        writeln!(&mut tw, "tags\t{}", book.tags.join(", "))?;
+    }
+    if let Some(s) = &book.series_name {
+        let line = match book.series_index {
+            Some(idx) => format!("{s} #{}", format_index(idx)),
+            None => s.clone(),
+        };
+        writeln!(&mut tw, "series\t{line}")?;
+    }
+    if let Some(r) = book.rating {
+        writeln!(&mut tw, "rating\t{r}/5")?;
+    }
+    if let Some(p) = &book.publisher {
+        writeln!(&mut tw, "publisher\t{p}")?;
+    }
+    if let Some(l) = &book.language {
+        writeln!(&mut tw, "language\t{l}")?;
+    }
+    if let Some(d) = &book.published_date {
+        writeln!(&mut tw, "published\t{d}")?;
+    }
+    if let Some(i) = &book.isbn {
+        writeln!(&mut tw, "isbn\t{i}")?;
+    }
+    if let Some(d) = &book.description {
+        writeln!(&mut tw, "description\t{d}")?;
+    }
     tw.flush()
 }
 
@@ -323,9 +399,26 @@ pub fn render_book_inspect_jsonl<W: Write>(
         format: &book.format,
         file_path: absolute_path,
         added_at: &book.added_at,
+        tags: &book.tags,
+        series_name: book.series_name.as_deref(),
+        series_index: book.series_index,
+        rating: book.rating,
+        publisher: book.publisher.as_deref(),
+        language: book.language.as_deref(),
+        published_date: book.published_date.as_deref(),
+        isbn: book.isbn.as_deref(),
+        description: book.description.as_deref(),
     };
     serde_json::to_writer(&mut *w, &value)?;
     writeln!(w)
+}
+
+fn format_index(idx: f64) -> String {
+    if idx.fract() == 0.0 {
+        format!("{}", idx as i64)
+    } else {
+        format!("{idx}")
+    }
 }
 
 #[derive(Serialize)]

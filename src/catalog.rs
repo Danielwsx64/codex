@@ -5,9 +5,12 @@ use rusqlite::Connection;
 use thiserror::Error;
 
 pub mod books;
+pub mod columns;
 pub mod handlers;
 pub mod render;
 pub mod schema;
+pub mod settings;
+pub mod tags;
 
 pub const DB_FILENAME: &str = "catalog.db";
 pub const BOOKS_DIRNAME: &str = "books";
@@ -72,6 +75,7 @@ pub fn open(catalog_dir: &Path) -> Result<Connection> {
     }
     let path = db_path(catalog_dir);
     let mut conn = Connection::open(&path)?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     schema::migrations().to_latest(&mut conn)?;
     Ok(conn)
 }

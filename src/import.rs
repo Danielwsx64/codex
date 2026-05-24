@@ -46,6 +46,14 @@ impl Format {
 pub struct Metadata {
     pub title: Option<String>,
     pub author: Option<String>,
+    pub description: Option<String>,
+    pub series_name: Option<String>,
+    pub series_index: Option<f64>,
+    pub isbn: Option<String>,
+    pub publisher: Option<String>,
+    pub language: Option<String>,
+    pub published_date: Option<String>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -56,12 +64,26 @@ pub enum Error {
     NoExtension { path: PathBuf },
     #[error("format `.{ext}` is not supported for `{}` (supported: {SUPPORTED_LIST})", .path.display())]
     Unsupported { path: PathBuf, ext: String },
-    #[error("failed to read epub `{}`: {source}", .path.display())]
-    Epub {
+    #[error("io error on `{}`: {source}", .path.display())]
+    Io {
         path: PathBuf,
         #[source]
-        source: rbook::result::EbookError,
+        source: std::io::Error,
     },
+    #[error("failed to read epub `{}`: {source}", .path.display())]
+    EpubZip {
+        path: PathBuf,
+        #[source]
+        source: zip::result::ZipError,
+    },
+    #[error("failed to parse epub xml in `{}`: {source}", .path.display())]
+    EpubXml {
+        path: PathBuf,
+        #[source]
+        source: quick_xml::Error,
+    },
+    #[error("epub `{}` has no rootfile in META-INF/container.xml", .path.display())]
+    EpubMissingOpf { path: PathBuf },
     #[error("failed to read pdf `{}`: {source}", .path.display())]
     Pdf {
         path: PathBuf,
@@ -257,6 +279,7 @@ mod tests {
         let meta = Metadata {
             title: Some("The Way of Kings".to_string()),
             author: Some("Brandon Sanderson".to_string()),
+            ..Metadata::default()
         };
         assert_eq!(
             build_filename(&meta, Format::Epub, "fallback"),
@@ -268,7 +291,7 @@ mod tests {
     fn build_filename_only_title() {
         let meta = Metadata {
             title: Some("Lone Title".to_string()),
-            author: None,
+            ..Metadata::default()
         };
         assert_eq!(build_filename(&meta, Format::Pdf, "f"), "Lone_Title.pdf");
     }
@@ -276,8 +299,8 @@ mod tests {
     #[test]
     fn build_filename_only_author() {
         let meta = Metadata {
-            title: None,
             author: Some("Solo Author".to_string()),
+            ..Metadata::default()
         };
         assert_eq!(build_filename(&meta, Format::Mobi, "f"), "Solo_Author.mobi");
     }
@@ -295,7 +318,7 @@ mod tests {
     fn build_filename_truncates_long_stem() {
         let meta = Metadata {
             title: Some("x".repeat(500)),
-            author: None,
+            ..Metadata::default()
         };
         let name = build_filename(&meta, Format::Epub, "f");
         assert!(name.len() <= MAX_STEM_LEN + ".epub".len());

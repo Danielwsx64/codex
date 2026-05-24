@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -52,10 +53,29 @@ impl App {
     pub fn run<B: Backend>(mut self, terminal: &mut Terminal<B>) -> Result<()> {
         while !self.should_quit {
             terminal.draw(|f| self.render(f))?;
-            let event = event::read()?;
-            self.dispatch(event)?;
+            if self.has_pending_work() {
+                if event::poll(Duration::from_millis(0))? {
+                    let event = event::read()?;
+                    self.dispatch(event)?;
+                } else {
+                    self.advance_work();
+                }
+            } else {
+                let event = event::read()?;
+                self.dispatch(event)?;
+            }
         }
         Ok(())
+    }
+
+    fn has_pending_work(&self) -> bool {
+        matches!(&self.screen, Screen::Library(s) if library::has_pending_embed_job(s))
+    }
+
+    fn advance_work(&mut self) {
+        if let Screen::Library(s) = &mut self.screen {
+            library::advance_embed_job(s);
+        }
     }
 
     pub fn dispatch(&mut self, event: Event) -> Result<()> {
@@ -84,6 +104,7 @@ impl App {
     fn captures_text_input(&self) -> bool {
         match &self.screen {
             Screen::NewCatalog(s) => new_catalog::captures_text_input(s),
+            Screen::Library(s) => library::captures_text_input(s),
             _ => false,
         }
     }
@@ -245,7 +266,9 @@ fn footer_hint(screen: &Screen) -> &'static str {
         Screen::Welcome(_) => "↑↓ navigate · Enter select",
         Screen::Catalogs(_) => "↑↓ select · Enter use · n new · d delete · Esc back",
         Screen::NewCatalog(_) => "Tab next field · Enter submit · Esc cancel",
-        Screen::Library(_) => "↑↓ select · i info · a add · d delete · Esc back",
+        Screen::Library(_) => {
+            "↑↓ select · i info · e edit · a add · d delete · c columns · ^W sync all · Esc back"
+        }
     }
 }
 

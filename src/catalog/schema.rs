@@ -1,9 +1,11 @@
 use rusqlite_migration::{Migrations, M};
 
 const INITIAL: &str = include_str!("../../migrations/0001_initial.sql");
+const METADATA: &str = include_str!("../../migrations/0002_metadata.sql");
+const SETTINGS: &str = include_str!("../../migrations/0003_settings.sql");
 
 pub fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(INITIAL)])
+    Migrations::new(vec![M::up(INITIAL), M::up(METADATA), M::up(SETTINGS)])
 }
 
 #[cfg(test)]

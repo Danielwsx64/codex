@@ -106,10 +106,22 @@ git); o cdx mantém um registro multi-catálogo em
 
 ## v0.2 — Edição de metadados
 
-- [ ] `cdx edit <id>` — abre `$EDITOR` com TOML/YAML dos metadados
-- [ ] `cdx tag <id> <tag>...` / `cdx untag`
-- [ ] `cdx rate <id> <0-5>`
-- [ ] `cdx series <id> <name> [--index N]`
+- [ ] `cdx edit <id>` — abre `$EDITOR` com TOML/YAML dos metadados —
+      TUI feita (`e` no Library abre modal com 11 campos); CLI pendente
+- [ ] `cdx tag <id> <tag>...` / `cdx untag` — TUI: campo "Tags" no modal
+      de edit (multi, comma-separated); coluna nova "tags" em `cdx ls`
+      humano e JSON; CLI dedicado pendente
+- [ ] `cdx rate <id> <0-5>` — TUI: campo "Rating" no modal (validado 0–5);
+      CLI pendente
+- [ ] `cdx series <id> <name> [--index N]` — TUI: campos "Series" +
+      "Index" no modal; CLI pendente
+- [x] TUI: embed de metadados em arquivo (EPUB/PDF) via tecla `w` no
+      Inspect — MOBI/AZW3 retorna status "embed not supported"
+- [x] Migration `0002_metadata.sql` — colunas `description`,
+      `series_name`, `series_index`, `rating`, `isbn`, `publisher`,
+      `language`, `published_date` em `books`; tabela `tags` + `book_tags`
+- [x] Extração no `cdx add` estendida (EPUB/MOBI/PDF) para popular os
+      novos campos quando disponíveis no arquivo
 
 ## v0.3 — Busca e filtros
 

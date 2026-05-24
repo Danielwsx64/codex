@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection};
 use thiserror::Error;
 
-use crate::catalog::{books_path, BOOKS_DIRNAME};
+use crate::catalog::{books_path, tags, BOOKS_DIRNAME};
 use crate::import;
 
 #[derive(Debug, Error)]
@@ -31,6 +31,17 @@ pub enum Error {
     },
     #[error("file `{}` is registered but missing from disk", .path.display())]
     FileMissing { path: PathBuf },
+    #[error("invalid value for {field}: {reason}")]
+    Validation { field: &'static str, reason: String },
+    #[error("failed to rename `{}` to `{}`: {source}", .from.display(), .to.display())]
+    RenameFailed {
+        from: PathBuf,
+        to: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("book id {id} has unknown format `{format}`")]
+    UnknownFormat { id: i64, format: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -43,6 +54,30 @@ pub struct Book {
     pub format: String,
     pub file_path: String,
     pub added_at: String,
+    pub description: Option<String>,
+    pub series_name: Option<String>,
+    pub series_index: Option<f64>,
+    pub rating: Option<u8>,
+    pub isbn: Option<String>,
+    pub publisher: Option<String>,
+    pub language: Option<String>,
+    pub published_date: Option<String>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BookUpdate {
+    pub title: String,
+    pub author: Option<String>,
+    pub description: Option<String>,
+    pub series_name: Option<String>,
+    pub series_index: Option<f64>,
+    pub rating: Option<u8>,
+    pub isbn: Option<String>,
+    pub publisher: Option<String>,
+    pub language: Option<String>,
+    pub published_date: Option<String>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -128,10 +163,29 @@ fn import_inner(conn: &mut Connection, catalog_dir: &Path, src: &Path) -> Result
 
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT INTO books (title, author, format, file_path) VALUES (?1, ?2, ?3, '')",
-        params![title, author, format_label],
+        "INSERT INTO books (
+            title, author, format, file_path,
+            description, series_name, series_index,
+            isbn, publisher, language, published_date
+         ) VALUES (?1, ?2, ?3, '', ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            title,
+            author,
+            format_label,
+            metadata.description,
+            metadata.series_name,
+            metadata.series_index,
+            metadata.isbn,
+            metadata.publisher,
+            metadata.language,
+            metadata.published_date,
+        ],
     )?;
     let id = tx.last_insert_rowid();
+
+    if !metadata.tags.is_empty() {
+        tags::sync(&tx, id, &metadata.tags)?;
+    }
 
     let book_dir = books_path(catalog_dir).join(id.to_string());
     fs::create_dir_all(&book_dir).map_err(|source| Error::Io {
@@ -158,21 +212,126 @@ fn import_inner(conn: &mut Connection, catalog_dir: &Path, src: &Path) -> Result
 
 pub fn handle_ls(conn: &Connection) -> Result<Vec<Book>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, author, format, file_path, added_at
+        "SELECT id, title, author, format, file_path, added_at,
+                description, series_name, series_index, rating,
+                isbn, publisher, language, published_date
          FROM books
          ORDER BY LOWER(title), id",
     )?;
-    let rows = stmt.query_map([], row_to_book)?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
+    let rows: rusqlite::Result<Vec<Book>> = stmt.query_map([], row_to_book)?.collect();
+    let mut books = rows?;
+    for b in &mut books {
+        b.tags = tags::fetch_for_book(conn, b.id)?;
     }
-    Ok(out)
+    Ok(books)
 }
 
 pub fn handle_inspect(conn: &Connection, target: &str) -> Result<Book> {
     let id = resolve_target(conn, target)?;
     fetch_by_id(conn, id)
+}
+
+pub fn handle_update(
+    conn: &mut Connection,
+    catalog_dir: &Path,
+    id: i64,
+    update: BookUpdate,
+) -> Result<Book> {
+    let title = update.title.trim();
+    if title.is_empty() {
+        return Err(Error::Validation {
+            field: "title",
+            reason: "must not be empty".to_string(),
+        });
+    }
+    if let Some(r) = update.rating {
+        if r > 5 {
+            return Err(Error::Validation {
+                field: "rating",
+                reason: format!("must be between 0 and 5 (got {r})"),
+            });
+        }
+    }
+
+    let current = fetch_by_id(conn, id)?;
+    let format =
+        import::Format::parse_label(&current.format).ok_or_else(|| Error::UnknownFormat {
+            id,
+            format: current.format.clone(),
+        })?;
+
+    let author = update
+        .author
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE books
+         SET title = ?1, author = ?2, description = ?3,
+             series_name = ?4, series_index = ?5, rating = ?6,
+             isbn = ?7, publisher = ?8, language = ?9, published_date = ?10
+         WHERE id = ?11",
+        params![
+            title,
+            author,
+            normalize_opt(&update.description),
+            normalize_opt(&update.series_name),
+            update.series_index,
+            update.rating.map(|r| r as i64),
+            normalize_opt(&update.isbn),
+            normalize_opt(&update.publisher),
+            normalize_opt(&update.language),
+            normalize_opt(&update.published_date),
+            id,
+        ],
+    )?;
+    tags::sync(&tx, id, &update.tags)?;
+
+    let new_meta = import::Metadata {
+        title: Some(title.to_string()),
+        author: author.clone(),
+        ..import::Metadata::default()
+    };
+    let fallback = Path::new(&current.file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("book");
+    let new_filename = import::build_filename(&new_meta, format, fallback);
+
+    let old_filename = Path::new(&current.file_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if new_filename != old_filename {
+        let old_abs = catalog_dir.join(&current.file_path);
+        let new_rel = format!("{BOOKS_DIRNAME}/{id}/{new_filename}");
+        let new_abs = catalog_dir.join(&new_rel);
+        if old_abs.exists() {
+            fs::rename(&old_abs, &new_abs).map_err(|source| Error::RenameFailed {
+                from: old_abs,
+                to: new_abs,
+                source,
+            })?;
+            tx.execute(
+                "UPDATE books SET file_path = ?1 WHERE id = ?2",
+                params![new_rel, id],
+            )?;
+        }
+    }
+
+    tx.commit()?;
+    fetch_by_id(conn, id)
+}
+
+fn normalize_opt(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 pub fn handle_rm(
@@ -289,19 +448,24 @@ fn resolve_target(conn: &Connection, target: &str) -> Result<i64> {
 }
 
 fn fetch_by_id(conn: &Connection, id: i64) -> Result<Book> {
-    conn.query_row(
-        "SELECT id, title, author, format, file_path, added_at
-         FROM books
-         WHERE id = ?1",
-        params![id],
-        row_to_book,
-    )
-    .map_err(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => Error::NotFound {
-            target: id.to_string(),
-        },
-        other => Error::Sqlite(other),
-    })
+    let mut book = conn
+        .query_row(
+            "SELECT id, title, author, format, file_path, added_at,
+                    description, series_name, series_index, rating,
+                    isbn, publisher, language, published_date
+             FROM books
+             WHERE id = ?1",
+            params![id],
+            row_to_book,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Error::NotFound {
+                target: id.to_string(),
+            },
+            other => Error::Sqlite(other),
+        })?;
+    book.tags = tags::fetch_for_book(conn, id)?;
+    Ok(book)
 }
 
 fn row_to_book(row: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
@@ -312,6 +476,15 @@ fn row_to_book(row: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
         format: row.get(3)?,
         file_path: row.get(4)?,
         added_at: row.get(5)?,
+        description: row.get(6)?,
+        series_name: row.get(7)?,
+        series_index: row.get(8)?,
+        rating: row.get::<_, Option<i64>>(9)?.map(|n| n.clamp(0, 5) as u8),
+        isbn: row.get(10)?,
+        publisher: row.get(11)?,
+        language: row.get(12)?,
+        published_date: row.get(13)?,
+        tags: Vec::new(),
     })
 }
 
@@ -409,5 +582,157 @@ mod tests {
         let rows = handle_ls(&conn).unwrap();
         let titles: Vec<_> = rows.iter().map(|b| b.title.as_str()).collect();
         assert_eq!(titles, vec!["alpha", "Bravo", "Charlie"]);
+    }
+
+    fn seed_book_with_file(catalog_dir: &Path, title: &str, author: &str) -> (i64, PathBuf) {
+        let conn = catalog::open_existing(catalog_dir).unwrap();
+        let filename = format!(
+            "{}_-_{}.epub",
+            author.replace(' ', "_"),
+            title.replace(' ', "_")
+        );
+        let rel = format!("{BOOKS_DIRNAME}/seed/{filename}");
+        // dummy id will be assigned by AUTOINCREMENT
+        conn.execute(
+            "INSERT INTO books (title, author, format, file_path) VALUES (?1, ?2, 'epub', ?3)",
+            params![title, author, rel],
+        )
+        .unwrap();
+        let id = conn.last_insert_rowid();
+        // move into id-based directory and rewrite file_path to match cdx layout
+        let final_rel = format!("{BOOKS_DIRNAME}/{id}/{filename}");
+        let abs = catalog_dir.join(&final_rel);
+        fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        fs::write(&abs, b"epub-stub").unwrap();
+        conn.execute(
+            "UPDATE books SET file_path = ?1 WHERE id = ?2",
+            params![final_rel, id],
+        )
+        .unwrap();
+        (id, abs)
+    }
+
+    #[test]
+    fn handle_update_persists_all_fields_and_tags() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        drop(conn);
+        let (id, _) = seed_book_with_file(&cat, "Old Title", "Old Author");
+        let mut conn = catalog::open_existing(&cat).unwrap();
+
+        let update = BookUpdate {
+            title: "New Title".into(),
+            author: Some("New Author".into()),
+            description: Some("Long desc".into()),
+            series_name: Some("Foundation".into()),
+            series_index: Some(2.0),
+            rating: Some(4),
+            isbn: Some("9780000000000".into()),
+            publisher: Some("Acme".into()),
+            language: Some("en".into()),
+            published_date: Some("2025-01-01".into()),
+            tags: vec!["sci-fi".into(), "classic".into()],
+        };
+        let book = handle_update(&mut conn, &cat, id, update).unwrap();
+        assert_eq!(book.title, "New Title");
+        assert_eq!(book.author.as_deref(), Some("New Author"));
+        assert_eq!(book.description.as_deref(), Some("Long desc"));
+        assert_eq!(book.series_name.as_deref(), Some("Foundation"));
+        assert_eq!(book.series_index, Some(2.0));
+        assert_eq!(book.rating, Some(4));
+        assert_eq!(book.isbn.as_deref(), Some("9780000000000"));
+        assert_eq!(book.publisher.as_deref(), Some("Acme"));
+        assert_eq!(book.language.as_deref(), Some("en"));
+        assert_eq!(book.published_date.as_deref(), Some("2025-01-01"));
+        assert_eq!(book.tags, vec!["classic", "sci-fi"]); // ORDER BY LOWER(name)
+    }
+
+    #[test]
+    fn handle_update_renames_file_when_title_changes() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        drop(conn);
+        let (id, old_abs) = seed_book_with_file(&cat, "Old", "Author");
+        assert!(old_abs.exists());
+        let mut conn = catalog::open_existing(&cat).unwrap();
+
+        let update = BookUpdate {
+            title: "Brand New".into(),
+            author: Some("Author".into()),
+            ..BookUpdate::default()
+        };
+        let book = handle_update(&mut conn, &cat, id, update).unwrap();
+        assert!(!old_abs.exists(), "old path must be gone after rename");
+        let new_abs = cat.join(&book.file_path);
+        assert!(
+            new_abs.exists(),
+            "new path must exist: {}",
+            new_abs.display()
+        );
+        assert!(book.file_path.ends_with("Author_-_Brand_New.epub"));
+    }
+
+    #[test]
+    fn handle_update_rejects_empty_title() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        drop(conn);
+        let (id, _) = seed_book_with_file(&cat, "T", "A");
+        let mut conn = catalog::open_existing(&cat).unwrap();
+
+        let update = BookUpdate {
+            title: "   ".into(),
+            ..BookUpdate::default()
+        };
+        let err = handle_update(&mut conn, &cat, id, update).unwrap_err();
+        assert!(matches!(err, Error::Validation { field: "title", .. }));
+    }
+
+    #[test]
+    fn handle_update_rejects_rating_above_5() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        drop(conn);
+        let (id, _) = seed_book_with_file(&cat, "T", "A");
+        let mut conn = catalog::open_existing(&cat).unwrap();
+
+        let update = BookUpdate {
+            title: "Valid".into(),
+            rating: Some(9),
+            ..BookUpdate::default()
+        };
+        let err = handle_update(&mut conn, &cat, id, update).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Validation {
+                field: "rating",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn handle_update_skips_rename_when_file_missing() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        drop(conn);
+        let (id, old_abs) = seed_book_with_file(&cat, "Old", "Author");
+        fs::remove_file(&old_abs).unwrap();
+        let mut conn = catalog::open_existing(&cat).unwrap();
+
+        let update = BookUpdate {
+            title: "Whatever".into(),
+            author: Some("Author".into()),
+            ..BookUpdate::default()
+        };
+        let book = handle_update(&mut conn, &cat, id, update).unwrap();
+        assert_eq!(book.title, "Whatever");
+        // file_path was not touched because the file is gone.
+        assert!(book.file_path.contains("Old"));
     }
 }

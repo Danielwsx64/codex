@@ -3,6 +3,7 @@ use std::path::Path;
 use lopdf::{Document, Object};
 
 use super::{Error, Metadata, Result};
+use crate::catalog::tags;
 
 pub fn extract(path: &Path) -> Result<Metadata> {
     let doc = Document::load(path).map_err(|source| Error::Pdf {
@@ -19,7 +20,28 @@ pub fn extract(path: &Path) -> Result<Metadata> {
     };
     let title = info.get(b"Title").ok().and_then(decode_pdf_string);
     let author = info.get(b"Author").ok().and_then(decode_pdf_string);
-    Ok(Metadata { title, author })
+    let description = info.get(b"Subject").ok().and_then(decode_pdf_string);
+    let publisher = info.get(b"Producer").ok().and_then(decode_pdf_string);
+    let published_date = info.get(b"CreationDate").ok().and_then(decode_pdf_string);
+    let tags = info
+        .get(b"Keywords")
+        .ok()
+        .and_then(decode_pdf_string)
+        .map(|s| tags::normalize(&s))
+        .unwrap_or_default();
+
+    Ok(Metadata {
+        title,
+        author,
+        description,
+        series_name: None,
+        series_index: None,
+        isbn: None,
+        publisher,
+        language: None,
+        published_date,
+        tags,
+    })
 }
 
 fn decode_pdf_string(obj: &Object) -> Option<String> {
@@ -28,7 +50,6 @@ fn decode_pdf_string(obj: &Object) -> Option<String> {
         return None;
     }
     let s = if bytes.starts_with(&[0xFE, 0xFF]) {
-        // UTF-16BE with BOM.
         let units: Vec<u16> = bytes[2..]
             .chunks_exact(2)
             .map(|c| u16::from_be_bytes([c[0], c[1]]))
