@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 
 use crate::catalog::columns::LibraryColumn;
-use crate::catalog::{self, books, render};
+use crate::catalog::{self, books, render, tags};
 use crate::config::paths::resolve_config_dir;
 use crate::config::{self, CatalogEntry, Registry};
 
@@ -138,6 +138,70 @@ pub fn dispatch_rm(
         render::render_book_rm_jsonl(&outcome, &mut out)?;
     } else {
         render::render_book_rm_human(&outcome, &mut out)?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
+pub fn dispatch_tag(
+    target: String,
+    raw_tags: Vec<String>,
+    data_dir: Option<&Path>,
+    catalog_override: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let names = tags::normalize_many(raw_tags);
+    if names.is_empty() {
+        anyhow::bail!("no valid tag names given");
+    }
+    let registry = load(data_dir)?;
+    let entry = resolve_entry(&registry, catalog_override)?.clone();
+    let mut conn = catalog::open_existing(&entry.path)
+        .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
+    let outcome = books::handle_tag_add(&mut conn, &target, &names)
+        .with_context(|| format!("while tagging `{target}`"))?;
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    if json {
+        render::render_tag_jsonl(&outcome, &mut out)?;
+    } else {
+        render::render_tag_human(&outcome, &mut out)?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
+pub fn dispatch_untag(
+    target: String,
+    raw_tags: Vec<String>,
+    all: bool,
+    data_dir: Option<&Path>,
+    catalog_override: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let registry = load(data_dir)?;
+    let entry = resolve_entry(&registry, catalog_override)?.clone();
+    let mut conn = catalog::open_existing(&entry.path)
+        .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
+
+    let outcome = if all {
+        books::handle_tag_clear(&mut conn, &target)
+            .with_context(|| format!("while clearing tags for `{target}`"))?
+    } else {
+        let names = tags::normalize_many(raw_tags);
+        if names.is_empty() {
+            anyhow::bail!("no valid tag names given (use --all to clear every tag)");
+        }
+        books::handle_tag_remove(&mut conn, &target, &names)
+            .with_context(|| format!("while untagging `{target}`"))?
+    };
+
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    if json {
+        render::render_untag_jsonl(&outcome, &mut out)?;
+    } else {
+        render::render_untag_human(&outcome, &mut out)?;
     }
     out.flush()?;
     Ok(())

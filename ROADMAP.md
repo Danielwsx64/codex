@@ -114,9 +114,10 @@ Ciclo de embed: qualquer edit (`cdx edit` ou TUI `e`) marca o livro como
 - [x] `cdx edit <id>` — abre `$EDITOR` com TOML dos metadados; valida
       no parse e reaproveita `handle_update` (que reseta `embed_status`
       para `pending`); tempfile preservado em caso de erro
-- [ ] `cdx tag <id> <tag>...` / `cdx untag` — TUI: campo "Tags" no modal
-      de edit (multi, comma-separated); coluna nova "tags" em `cdx ls`
-      humano e JSON; CLI dedicado pendente
+- [x] `cdx tag <id> <tag>...` / `cdx untag <id> <tag>... [--all]` — campo
+      "Tags" no modal de edit da TUI (multi, comma-separated); coluna "tags"
+      em `cdx ls` humano e JSON; embed_status volta a `pending` só quando o
+      conjunto muda; `--all` em `untag` zera todas as tags
 - [ ] `cdx rate <id> <0-5>` — TUI: campo "Rating" no modal (validado 0–5);
       CLI pendente
 - [ ] `cdx series <id> <name> [--index N]` — TUI: campos "Series" +

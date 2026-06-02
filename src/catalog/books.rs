@@ -147,6 +147,13 @@ pub struct RmOutcome {
     pub kept_at: Option<PathBuf>,
 }
 
+#[derive(Debug)]
+pub struct TagOpOutcome {
+    pub book: Book,
+    pub changed: Vec<String>,
+    pub unchanged: Vec<String>,
+}
+
 pub fn handle_add(conn: &mut Connection, catalog_dir: &Path, paths: &[PathBuf]) -> AddOutcome {
     let mut rows = Vec::with_capacity(paths.len());
     for src in paths {
@@ -390,6 +397,70 @@ pub fn handle_update(
 
     tx.commit()?;
     fetch_by_id(conn, id)
+}
+
+pub fn handle_tag_add(
+    conn: &mut Connection,
+    target: &str,
+    names: &[String],
+) -> Result<TagOpOutcome> {
+    let id = resolve_target(conn, target)?;
+    let tx = conn.transaction()?;
+    let delta = tags::add_for_book(&tx, id, names)?;
+    if !delta.changed.is_empty() {
+        mark_pending(&tx, id)?;
+    }
+    tx.commit()?;
+    let book = fetch_by_id(conn, id)?;
+    Ok(TagOpOutcome {
+        book,
+        changed: delta.changed,
+        unchanged: delta.unchanged,
+    })
+}
+
+pub fn handle_tag_remove(
+    conn: &mut Connection,
+    target: &str,
+    names: &[String],
+) -> Result<TagOpOutcome> {
+    let id = resolve_target(conn, target)?;
+    let tx = conn.transaction()?;
+    let delta = tags::remove_for_book(&tx, id, names)?;
+    if !delta.changed.is_empty() {
+        mark_pending(&tx, id)?;
+    }
+    tx.commit()?;
+    let book = fetch_by_id(conn, id)?;
+    Ok(TagOpOutcome {
+        book,
+        changed: delta.changed,
+        unchanged: delta.unchanged,
+    })
+}
+
+pub fn handle_tag_clear(conn: &mut Connection, target: &str) -> Result<TagOpOutcome> {
+    let id = resolve_target(conn, target)?;
+    let tx = conn.transaction()?;
+    let removed = tags::clear_for_book(&tx, id)?;
+    if !removed.is_empty() {
+        mark_pending(&tx, id)?;
+    }
+    tx.commit()?;
+    let book = fetch_by_id(conn, id)?;
+    Ok(TagOpOutcome {
+        book,
+        changed: removed,
+        unchanged: Vec::new(),
+    })
+}
+
+fn mark_pending(tx: &rusqlite::Transaction<'_>, id: i64) -> Result<()> {
+    tx.execute(
+        "UPDATE books SET embed_status = 'pending', embed_synced_at = NULL WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(())
 }
 
 fn normalize_opt(value: &Option<String>) -> Option<String> {
@@ -859,6 +930,130 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn handle_tag_add_resets_embed_status_when_changed() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "B", None);
+        mark_embed_synced(&conn, id).unwrap();
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        let out = handle_tag_add(
+            &mut conn,
+            &id.to_string(),
+            &["sci-fi".into(), "epic".into()],
+        )
+        .unwrap();
+        assert_eq!(out.changed, vec!["sci-fi", "epic"]);
+        assert!(out.unchanged.is_empty());
+        assert_eq!(out.book.embed_status, EmbedStatus::Pending);
+        assert!(out.book.embed_synced_at.is_none());
+        assert_eq!(out.book.tags, vec!["epic", "sci-fi"]); // ORDER BY LOWER(name)
+    }
+
+    #[test]
+    fn handle_tag_add_pure_noop_preserves_embed_status() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "B", None);
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        handle_tag_add(&mut conn, &id.to_string(), &["sci-fi".into()]).unwrap();
+        mark_embed_synced(&conn, id).unwrap();
+
+        let out = handle_tag_add(&mut conn, &id.to_string(), &["sci-fi".into()]).unwrap();
+        assert!(out.changed.is_empty());
+        assert_eq!(out.unchanged, vec!["sci-fi"]);
+        assert_eq!(
+            out.book.embed_status,
+            EmbedStatus::Synced,
+            "no-op must not flip embed status"
+        );
+        assert!(out.book.embed_synced_at.is_some());
+    }
+
+    #[test]
+    fn handle_tag_remove_resets_only_when_changed() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "B", None);
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        handle_tag_add(&mut conn, &id.to_string(), &["a".into(), "b".into()]).unwrap();
+        mark_embed_synced(&conn, id).unwrap();
+
+        let out =
+            handle_tag_remove(&mut conn, &id.to_string(), &["a".into(), "ghost".into()]).unwrap();
+        assert_eq!(out.changed, vec!["a"]);
+        assert_eq!(out.unchanged, vec!["ghost"]);
+        assert_eq!(out.book.embed_status, EmbedStatus::Pending);
+        assert_eq!(out.book.tags, vec!["b"]);
+
+        mark_embed_synced(&conn, id).unwrap();
+        let out = handle_tag_remove(&mut conn, &id.to_string(), &["ghost".into()]).unwrap();
+        assert!(out.changed.is_empty());
+        assert_eq!(out.book.embed_status, EmbedStatus::Synced);
+    }
+
+    #[test]
+    fn handle_tag_clear_returns_removed_set_and_resets_embed() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "B", None);
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        handle_tag_add(
+            &mut conn,
+            &id.to_string(),
+            &["sci-fi".into(), "classic".into()],
+        )
+        .unwrap();
+        mark_embed_synced(&conn, id).unwrap();
+
+        let out = handle_tag_clear(&mut conn, &id.to_string()).unwrap();
+        assert_eq!(out.changed, vec!["classic", "sci-fi"]);
+        assert!(out.unchanged.is_empty());
+        assert!(out.book.tags.is_empty());
+        assert_eq!(out.book.embed_status, EmbedStatus::Pending);
+    }
+
+    #[test]
+    fn handle_tag_clear_on_empty_set_is_silent_noop() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "B", None);
+        mark_embed_synced(&conn, id).unwrap();
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        let out = handle_tag_clear(&mut conn, &id.to_string()).unwrap();
+        assert!(out.changed.is_empty());
+        assert_eq!(out.book.embed_status, EmbedStatus::Synced);
+    }
+
+    #[test]
+    fn handle_tag_add_resolves_target_by_title() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "Sapiens", Some("YNH"));
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        let out = handle_tag_add(&mut conn, "sapiens", &["history".into()]).unwrap();
+        assert_eq!(out.book.id, id);
+        assert_eq!(out.book.tags, vec!["history"]);
     }
 
     #[test]

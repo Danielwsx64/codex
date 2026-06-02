@@ -90,6 +90,38 @@ pub enum Command {
         )]
         target: String,
     },
+    #[command(about = "Add tags to a book")]
+    Tag {
+        #[arg(
+            value_name = "ID_OR_TITLE",
+            help = "Numeric id, or exact title (case-insensitive)"
+        )]
+        target: String,
+        #[arg(
+            required = true,
+            num_args = 1..,
+            value_name = "TAG",
+            help = "One or more tag names to add (case-insensitive match against existing tags)"
+        )]
+        tags: Vec<String>,
+    },
+    #[command(about = "Remove tags from a book")]
+    Untag {
+        #[arg(
+            value_name = "ID_OR_TITLE",
+            help = "Numeric id, or exact title (case-insensitive)"
+        )]
+        target: String,
+        #[arg(
+            num_args = 0..,
+            value_name = "TAG",
+            conflicts_with = "all",
+            help = "One or more tag names to remove (case-insensitive)"
+        )]
+        tags: Vec<String>,
+        #[arg(long, help = "Remove every tag currently on the book")]
+        all: bool,
+    },
     #[command(about = "Remove a book from the catalog; by default deletes its file")]
     Rm {
         #[arg(

@@ -51,6 +51,21 @@ pub fn run() -> Result<()> {
         Some(Command::Edit { target }) => {
             cli::edit::dispatch(target, cli.data_dir.as_deref(), cli.catalog.as_deref())
         }
+        Some(Command::Tag { target, tags }) => cli::books::dispatch_tag(
+            target,
+            tags,
+            cli.data_dir.as_deref(),
+            cli.catalog.as_deref(),
+            cli.json,
+        ),
+        Some(Command::Untag { target, tags, all }) => cli::books::dispatch_untag(
+            target,
+            tags,
+            all,
+            cli.data_dir.as_deref(),
+            cli.catalog.as_deref(),
+            cli.json,
+        ),
         Some(Command::Rm { target, keep }) => cli::books::dispatch_rm(
             target,
             keep,

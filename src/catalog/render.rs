@@ -5,7 +5,7 @@ use serde::Serialize;
 use tabwriter::TabWriter;
 
 use crate::catalog::books::{
-    AddOutcome as BookAddOutcome, AddStatus, Book, RmOutcome as BookRmOutcome,
+    AddOutcome as BookAddOutcome, AddStatus, Book, RmOutcome as BookRmOutcome, TagOpOutcome,
 };
 use crate::catalog::columns::LibraryColumn;
 use crate::catalog::handlers::{AddOutcome, CatalogRow, InitOutcome, RmOutcome, UseOutcome};
@@ -417,6 +417,112 @@ pub fn render_book_rm_human<W: Write>(outcome: &BookRmOutcome, w: &mut W) -> io:
             title = outcome.book.title,
         ),
     }
+}
+
+#[derive(Serialize)]
+struct TagJson<'a> {
+    action: &'a str,
+    id: i64,
+    title: &'a str,
+    added: &'a [String],
+    already_present: &'a [String],
+}
+
+#[derive(Serialize)]
+struct UntagJson<'a> {
+    action: &'a str,
+    id: i64,
+    title: &'a str,
+    removed: &'a [String],
+    not_present: &'a [String],
+}
+
+pub fn render_tag_human<W: Write>(op: &TagOpOutcome, w: &mut W) -> io::Result<()> {
+    if op.changed.is_empty() && op.unchanged.is_empty() {
+        writeln!(w, "Book {} ({}): no tags given", op.book.id, op.book.title)?;
+        return Ok(());
+    }
+    if op.changed.is_empty() {
+        writeln!(
+            w,
+            "Book {} ({}): no changes (already present: {})",
+            op.book.id,
+            op.book.title,
+            op.unchanged.join(", "),
+        )?;
+        return Ok(());
+    }
+    let plus = op
+        .changed
+        .iter()
+        .map(|s| format!("+{s}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(w, "Tagged book {} ({}): {plus}", op.book.id, op.book.title)?;
+    if !op.unchanged.is_empty() {
+        writeln!(w, "  already present: {}", op.unchanged.join(", "))?;
+    }
+    Ok(())
+}
+
+pub fn render_tag_jsonl<W: Write>(op: &TagOpOutcome, w: &mut W) -> io::Result<()> {
+    let value = TagJson {
+        action: "tag",
+        id: op.book.id,
+        title: &op.book.title,
+        added: &op.changed,
+        already_present: &op.unchanged,
+    };
+    serde_json::to_writer(&mut *w, &value)?;
+    writeln!(w)
+}
+
+pub fn render_untag_human<W: Write>(op: &TagOpOutcome, w: &mut W) -> io::Result<()> {
+    if op.changed.is_empty() && op.unchanged.is_empty() {
+        writeln!(
+            w,
+            "Book {} ({}): no tags to remove",
+            op.book.id, op.book.title
+        )?;
+        return Ok(());
+    }
+    if op.changed.is_empty() {
+        writeln!(
+            w,
+            "Book {} ({}): no changes (not present: {})",
+            op.book.id,
+            op.book.title,
+            op.unchanged.join(", "),
+        )?;
+        return Ok(());
+    }
+    let minus = op
+        .changed
+        .iter()
+        .map(|s| format!("-{s}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(
+        w,
+        "Untagged book {} ({}): {minus}",
+        op.book.id, op.book.title
+    )?;
+    if !op.unchanged.is_empty() {
+        writeln!(w, "  not present: {}", op.unchanged.join(", "))?;
+    }
+    Ok(())
+}
+
+pub fn render_untag_jsonl<W: Write>(op: &TagOpOutcome, w: &mut W) -> io::Result<()> {
+    let value = UntagJson {
+        action: "untag",
+        id: op.book.id,
+        title: &op.book.title,
+        removed: &op.changed,
+        not_present: &op.unchanged,
+    };
+    serde_json::to_writer(&mut *w, &value)?;
+    writeln!(w)
 }
 
 pub fn render_book_rm_jsonl<W: Write>(outcome: &BookRmOutcome, w: &mut W) -> io::Result<()> {
