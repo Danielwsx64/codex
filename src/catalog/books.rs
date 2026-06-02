@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
+use rusqlite::types::Value;
 use rusqlite::{params, Connection, OptionalExtension};
 use thiserror::Error;
 
@@ -149,6 +151,49 @@ impl AddOutcome {
             .iter()
             .any(|r| matches!(r.status, AddStatus::Duplicate { .. }))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RatingRange {
+    pub min: u8,
+    pub max: u8,
+}
+
+impl FromStr for RatingRange {
+    type Err = String;
+
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        let s = raw.trim();
+        let parse_one = |t: &str| -> std::result::Result<u8, String> {
+            let n: u8 = t
+                .parse()
+                .map_err(|_| "rating must be 0..5 or a range like 3..5".to_string())?;
+            if n > 5 {
+                return Err("rating must be 0..5 or a range like 3..5".to_string());
+            }
+            Ok(n)
+        };
+        if let Some((lo, hi)) = s.split_once("..") {
+            let min = parse_one(lo.trim())?;
+            let max = parse_one(hi.trim())?;
+            if min > max {
+                return Err("rating range min must be <= max".to_string());
+            }
+            Ok(RatingRange { min, max })
+        } else {
+            let n = parse_one(s)?;
+            Ok(RatingRange { min: n, max: n })
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct SearchFilters<'a> {
+    pub query: Option<&'a str>,
+    pub author: Option<&'a str>,
+    pub tags: &'a [String],
+    pub series: Option<&'a str>,
+    pub rating: Option<RatingRange>,
 }
 
 #[derive(Debug)]
@@ -381,38 +426,84 @@ pub fn handle_ls(conn: &Connection) -> Result<Vec<Book>> {
     Ok(books)
 }
 
-pub fn handle_search(conn: &Connection, query: &str) -> Result<Vec<Book>> {
-    let tokens: Vec<String> = query
+pub fn handle_search(conn: &Connection, filters: &SearchFilters) -> Result<Vec<Book>> {
+    let tokens: Vec<String> = filters
+        .query
+        .unwrap_or("")
         .split_whitespace()
         .map(escape_like)
         .map(|t| format!("%{t}%"))
         .collect();
-    if tokens.is_empty() {
-        return Err(Error::Validation {
-            field: "query",
-            reason: "must not be empty".to_string(),
-        });
-    }
+
+    let mut clauses: Vec<String> = Vec::new();
+    let mut params: Vec<Value> = Vec::new();
 
     // Each token gets its own positional placeholder reused across the three
     // OR branches (title / author / any tag name). Joining the per-token
     // clauses with AND gives whitespace-token semantics: every token must
     // match somewhere on a row for it to come back.
-    let where_clause = (1..=tokens.len())
-        .map(|n| {
-            format!(
-                "(b.title LIKE ?{n} ESCAPE '\\' COLLATE NOCASE \
-                  OR b.author LIKE ?{n} ESCAPE '\\' COLLATE NOCASE \
-                  OR EXISTS ( \
-                    SELECT 1 FROM book_tags bt \
-                    JOIN tags t ON t.id = bt.tag_id \
-                    WHERE bt.book_id = b.id \
-                      AND t.name LIKE ?{n} ESCAPE '\\' COLLATE NOCASE \
-                  ))"
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" AND ");
+    for token in &tokens {
+        let n = params.len() + 1;
+        clauses.push(format!(
+            "(b.title LIKE ?{n} ESCAPE '\\' COLLATE NOCASE \
+              OR b.author LIKE ?{n} ESCAPE '\\' COLLATE NOCASE \
+              OR EXISTS ( \
+                SELECT 1 FROM book_tags bt \
+                JOIN tags t ON t.id = bt.tag_id \
+                WHERE bt.book_id = b.id \
+                  AND t.name LIKE ?{n} ESCAPE '\\' COLLATE NOCASE \
+              ))"
+        ));
+        params.push(Value::Text(token.clone()));
+    }
+
+    if let Some(author) = filters.author.map(str::trim).filter(|s| !s.is_empty()) {
+        let n = params.len() + 1;
+        clauses.push(format!("b.author LIKE ?{n} ESCAPE '\\' COLLATE NOCASE"));
+        params.push(Value::Text(format!("%{}%", escape_like(author))));
+    }
+
+    if let Some(series) = filters.series.map(str::trim).filter(|s| !s.is_empty()) {
+        let n = params.len() + 1;
+        clauses.push(format!(
+            "b.series_name LIKE ?{n} ESCAPE '\\' COLLATE NOCASE"
+        ));
+        params.push(Value::Text(format!("%{}%", escape_like(series))));
+    }
+
+    for tag in filters.tags {
+        let tag = tag.trim();
+        if tag.is_empty() {
+            continue;
+        }
+        let n = params.len() + 1;
+        clauses.push(format!(
+            "EXISTS ( \
+                SELECT 1 FROM book_tags bt \
+                JOIN tags t ON t.id = bt.tag_id \
+                WHERE bt.book_id = b.id \
+                  AND t.name LIKE ?{n} ESCAPE '\\' COLLATE NOCASE \
+              )"
+        ));
+        params.push(Value::Text(format!("%{}%", escape_like(tag))));
+    }
+
+    if let Some(range) = filters.rating {
+        let n_min = params.len() + 1;
+        let n_max = params.len() + 2;
+        clauses.push(format!("b.rating BETWEEN ?{n_min} AND ?{n_max}"));
+        params.push(Value::Integer(i64::from(range.min)));
+        params.push(Value::Integer(i64::from(range.max)));
+    }
+
+    if clauses.is_empty() {
+        return Err(Error::Validation {
+            field: "filters",
+            reason: "no search criteria supplied".to_string(),
+        });
+    }
+
+    let where_clause = clauses.join(" AND ");
     let sql = format!(
         "SELECT id, title, author, format, file_path, added_at,
                 description, series_name, series_index, rating,
@@ -425,10 +516,7 @@ pub fn handle_search(conn: &Connection, query: &str) -> Result<Vec<Book>> {
 
     let mut stmt = conn.prepare(&sql)?;
     let rows: rusqlite::Result<Vec<Book>> = stmt
-        .query_map(
-            rusqlite::params_from_iter(tokens.iter().map(String::as_str)),
-            row_to_book,
-        )?
+        .query_map(rusqlite::params_from_iter(params.iter()), row_to_book)?
         .collect();
     let mut books = rows?;
     for b in &mut books {
@@ -1565,13 +1653,34 @@ mod tests {
         assert_eq!(handle_ls(&conn).unwrap().len(), 1);
     }
 
+    fn query_filters(q: &str) -> SearchFilters<'_> {
+        SearchFilters {
+            query: Some(q),
+            ..Default::default()
+        }
+    }
+
     #[test]
-    fn handle_search_rejects_empty_query() {
+    fn handle_search_rejects_empty_criteria() {
         let dir = tempdir().unwrap();
         let cat = dir.path().join("c");
         let conn = open_fresh(&cat);
-        let err = handle_search(&conn, "   ").unwrap_err();
-        assert!(matches!(err, Error::Validation { field: "query", .. }));
+        let err = handle_search(&conn, &query_filters("   ")).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Validation {
+                field: "filters",
+                ..
+            }
+        ));
+        let err = handle_search(&conn, &SearchFilters::default()).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Validation {
+                field: "filters",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1588,7 +1697,7 @@ mod tests {
         let mut conn = catalog::open_existing(&cat).unwrap();
         handle_tag_add(&mut conn, &by_tag.to_string(), &["rust-pattern".into()]).unwrap();
 
-        let rows = handle_search(&conn, "rust").unwrap();
+        let rows = handle_search(&conn, &query_filters("rust")).unwrap();
         let ids: Vec<i64> = rows.iter().map(|b| b.id).collect();
         // Three matches: title contains "rust", tag is "rust-pattern", and
         // "Programming Erlang" by Joe Armstrong does NOT match — only books
@@ -1601,7 +1710,7 @@ mod tests {
         );
 
         // Author match (substring) works too.
-        let rows = handle_search(&conn, "Armstrong").unwrap();
+        let rows = handle_search(&conn, &query_filters("Armstrong")).unwrap();
         let ids: Vec<i64> = rows.iter().map(|b| b.id).collect();
         assert_eq!(ids, vec![by_author]);
     }
@@ -1621,7 +1730,7 @@ mod tests {
         // (not columns) still keeps the row.
         handle_tag_add(&mut conn, &target.to_string(), &["tim-special".into()]).unwrap();
 
-        let rows = handle_search(&conn, "rust tim-special").unwrap();
+        let rows = handle_search(&conn, &query_filters("rust tim-special")).unwrap();
         let ids: Vec<i64> = rows.iter().map(|b| b.id).collect();
         assert_eq!(ids, vec![target]);
     }
@@ -1632,7 +1741,7 @@ mod tests {
         let cat = dir.path().join("c");
         let conn = open_fresh(&cat);
         let id = insert_book(&conn, "Hello WORLD", Some("Someone"));
-        let rows = handle_search(&conn, "hello world").unwrap();
+        let rows = handle_search(&conn, &query_filters("hello world")).unwrap();
         assert_eq!(rows.iter().map(|b| b.id).collect::<Vec<_>>(), vec![id]);
     }
 
@@ -1644,12 +1753,12 @@ mod tests {
         let literal = insert_book(&conn, "100% Pure", None);
         let _decoy = insert_book(&conn, "Hundred Pct Pure", None);
         // `%` must be matched literally, not as the SQL wildcard.
-        let rows = handle_search(&conn, "100%").unwrap();
+        let rows = handle_search(&conn, &query_filters("100%")).unwrap();
         assert_eq!(rows.iter().map(|b| b.id).collect::<Vec<_>>(), vec![literal]);
 
         let underscore = insert_book(&conn, "snake_case explained", None);
         let _decoy2 = insert_book(&conn, "snakeXcase explained", None);
-        let rows = handle_search(&conn, "snake_case").unwrap();
+        let rows = handle_search(&conn, &query_filters("snake_case")).unwrap();
         assert_eq!(
             rows.iter().map(|b| b.id).collect::<Vec<_>>(),
             vec![underscore]
@@ -1672,9 +1781,170 @@ mod tests {
         )
         .unwrap();
 
-        let rows = handle_search(&conn, "foundation").unwrap();
+        let rows = handle_search(&conn, &query_filters("foundation")).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].tags, vec!["classic", "sci-fi"]);
+    }
+
+    #[test]
+    fn handle_search_filters_by_author_substring() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let asimov = insert_book(&conn, "Foundation", Some("Isaac Asimov"));
+        let _other = insert_book(&conn, "1984", Some("George Orwell"));
+
+        let filters = SearchFilters {
+            author: Some("asimov"),
+            ..Default::default()
+        };
+        let rows = handle_search(&conn, &filters).unwrap();
+        assert_eq!(rows.iter().map(|b| b.id).collect::<Vec<_>>(), vec![asimov]);
+    }
+
+    #[test]
+    fn handle_search_filters_by_series_substring() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let in_series = insert_book(&conn, "Foundation", Some("Asimov"));
+        let _other = insert_book(&conn, "1984", Some("Orwell"));
+        conn.execute(
+            "UPDATE books SET series_name = ?1 WHERE id = ?2",
+            params!["Foundation Saga", in_series],
+        )
+        .unwrap();
+
+        let filters = SearchFilters {
+            series: Some("saga"),
+            ..Default::default()
+        };
+        let rows = handle_search(&conn, &filters).unwrap();
+        assert_eq!(
+            rows.iter().map(|b| b.id).collect::<Vec<_>>(),
+            vec![in_series]
+        );
+    }
+
+    #[test]
+    fn handle_search_filters_by_tag_with_and_semantics() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let _conn = open_fresh(&cat);
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        let both = insert_book(&conn, "Both", None);
+        let only_fic = insert_book(&conn, "OnlyFic", None);
+        let _none = insert_book(&conn, "None", None);
+
+        handle_tag_add(
+            &mut conn,
+            &both.to_string(),
+            &["fiction".into(), "favorite".into()],
+        )
+        .unwrap();
+        handle_tag_add(&mut conn, &only_fic.to_string(), &["fiction".into()]).unwrap();
+
+        // Single tag matches both books that carry it.
+        let single = SearchFilters {
+            tags: &["fiction".into()],
+            ..Default::default()
+        };
+        let mut ids: Vec<i64> = handle_search(&conn, &single)
+            .unwrap()
+            .iter()
+            .map(|b| b.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec![both, only_fic]);
+
+        // Two tags AND together — only the book with both survives.
+        let both_filter = SearchFilters {
+            tags: &["fiction".into(), "favorite".into()],
+            ..Default::default()
+        };
+        let rows = handle_search(&conn, &both_filter).unwrap();
+        assert_eq!(rows.iter().map(|b| b.id).collect::<Vec<_>>(), vec![both]);
+    }
+
+    #[test]
+    fn handle_search_filters_by_rating_range() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let three = insert_book(&conn, "Three", None);
+        let four = insert_book(&conn, "Four", None);
+        let five = insert_book(&conn, "Five", None);
+        let _unrated = insert_book(&conn, "Unrated", None);
+        conn.execute("UPDATE books SET rating = 3 WHERE id = ?1", params![three])
+            .unwrap();
+        conn.execute("UPDATE books SET rating = 4 WHERE id = ?1", params![four])
+            .unwrap();
+        conn.execute("UPDATE books SET rating = 5 WHERE id = ?1", params![five])
+            .unwrap();
+
+        let exact = SearchFilters {
+            rating: Some(RatingRange { min: 5, max: 5 }),
+            ..Default::default()
+        };
+        assert_eq!(
+            handle_search(&conn, &exact)
+                .unwrap()
+                .iter()
+                .map(|b| b.id)
+                .collect::<Vec<_>>(),
+            vec![five]
+        );
+
+        let range = SearchFilters {
+            rating: Some(RatingRange { min: 3, max: 5 }),
+            ..Default::default()
+        };
+        let mut ids: Vec<i64> = handle_search(&conn, &range)
+            .unwrap()
+            .iter()
+            .map(|b| b.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec![three, four, five]);
+    }
+
+    #[test]
+    fn handle_search_combines_query_with_filters() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let _conn = open_fresh(&cat);
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        let target = insert_book(&conn, "Sample Book", Some("Jane Doe"));
+        let _decoy_title = insert_book(&conn, "Sample Other", Some("John Roe"));
+        handle_tag_add(&mut conn, &target.to_string(), &["fiction".into()]).unwrap();
+
+        let filters = SearchFilters {
+            query: Some("sample"),
+            author: Some("jane"),
+            tags: &["fiction".into()],
+            ..Default::default()
+        };
+        let rows = handle_search(&conn, &filters).unwrap();
+        assert_eq!(rows.iter().map(|b| b.id).collect::<Vec<_>>(), vec![target]);
+    }
+
+    #[test]
+    fn rating_range_parses_exact_and_range() {
+        let r: RatingRange = "4".parse().unwrap();
+        assert_eq!(r, RatingRange { min: 4, max: 4 });
+        let r: RatingRange = "3..5".parse().unwrap();
+        assert_eq!(r, RatingRange { min: 3, max: 5 });
+        let r: RatingRange = "0..0".parse().unwrap();
+        assert_eq!(r, RatingRange { min: 0, max: 0 });
+    }
+
+    #[test]
+    fn rating_range_rejects_out_of_range_and_inverted() {
+        assert!("6".parse::<RatingRange>().is_err());
+        assert!("5..3".parse::<RatingRange>().is_err());
+        assert!("abc".parse::<RatingRange>().is_err());
+        assert!("..5".parse::<RatingRange>().is_err());
+        assert!("3..".parse::<RatingRange>().is_err());
     }
 
     #[test]

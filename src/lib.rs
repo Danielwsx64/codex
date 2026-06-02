@@ -34,12 +34,8 @@ pub fn run() -> Result<()> {
             cli.catalog.as_deref(),
             cli.json,
         ),
-        Some(Command::Ls {
-            columns,
-            all_columns,
-        }) => cli::books::dispatch_ls(
-            columns,
-            all_columns,
+        Some(Command::Ls { view }) => cli::books::dispatch_ls(
+            view,
             cli.data_dir.as_deref(),
             cli.catalog.as_deref(),
             cli.json,
@@ -50,8 +46,22 @@ pub fn run() -> Result<()> {
             cli.catalog.as_deref(),
             cli.json,
         ),
-        Some(Command::Search { query }) => cli::books::dispatch_search(
+        Some(Command::Search {
             query,
+            author,
+            tag,
+            series,
+            rating,
+            view,
+        }) => cli::books::dispatch_search(
+            cli::books::SearchInput {
+                query,
+                author,
+                tag,
+                series,
+                rating,
+                view,
+            },
             cli.data_dir.as_deref(),
             cli.catalog.as_deref(),
             cli.json,

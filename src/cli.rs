@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand};
 
 pub mod books;
 pub mod catalog;
@@ -46,6 +46,24 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
+// Column-selection flags shared by every command that lists books. Flatten
+// this into new list-style commands instead of redeclaring the two flags.
+#[derive(Args, Debug, Default)]
+pub struct LibraryColumnArgs {
+    #[arg(
+        long,
+        value_name = "LIST",
+        conflicts_with = "all_columns",
+        help = "Comma-separated column slugs to show, in display order (use --all-columns to list every slug)"
+    )]
+    pub columns: Option<String>,
+    #[arg(
+        long,
+        help = "Show every available column (id, title, author, tags, series, rating, publisher, language, published, isbn, format, embed)"
+    )]
+    pub all_columns: bool,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Command {
     #[command(about = "Open the cdx terminal UI")]
@@ -66,18 +84,8 @@ pub enum Command {
     },
     #[command(about = "List books in the current catalog")]
     Ls {
-        #[arg(
-            long,
-            value_name = "LIST",
-            conflicts_with = "all_columns",
-            help = "Comma-separated column slugs to show, in display order (use --all-columns to list every slug)"
-        )]
-        columns: Option<String>,
-        #[arg(
-            long,
-            help = "Show every available column (id, title, author, tags, series, rating, publisher, language, published, isbn, format, embed)"
-        )]
-        all_columns: bool,
+        #[command(flatten)]
+        view: LibraryColumnArgs,
     },
     #[command(about = "Edit a book's metadata in $EDITOR (TOML)")]
     Edit {
@@ -95,15 +103,41 @@ pub enum Command {
         )]
         target: String,
     },
-    #[command(
-        about = "Search books by substring across title, author and tags (whitespace = AND tokens)"
-    )]
+    #[command(about = "Search books by substring, optionally filtered by field")]
     Search {
         #[arg(
             value_name = "QUERY",
-            help = "Search query; multiple whitespace-separated tokens must all match"
+            required_unless_present_any = ["author", "tag", "series", "rating"],
+            help = "Search query across title/author/tags; whitespace-separated tokens are AND'd"
         )]
-        query: String,
+        query: Option<String>,
+        #[arg(
+            long,
+            value_name = "AUTHOR",
+            help = "Substring match on the author field (case-insensitive)"
+        )]
+        author: Option<String>,
+        #[arg(
+            long,
+            value_name = "TAG",
+            help = "Substring match on a tag; repeat for AND semantics"
+        )]
+        tag: Vec<String>,
+        #[arg(
+            long,
+            value_name = "SERIES",
+            help = "Substring match on the series name (case-insensitive)"
+        )]
+        series: Option<String>,
+        #[arg(
+            long,
+            value_name = "N or MIN..MAX",
+            value_parser = clap::value_parser!(crate::catalog::books::RatingRange),
+            help = "Rating filter: exact (4) or inclusive range (3..5); both ends in 0..=5"
+        )]
+        rating: Option<crate::catalog::books::RatingRange>,
+        #[command(flatten)]
+        view: LibraryColumnArgs,
     },
     #[command(about = "Add tags to a book")]
     Tag {

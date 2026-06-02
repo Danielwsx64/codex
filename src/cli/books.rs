@@ -5,6 +5,7 @@ use anyhow::{anyhow, Context, Result};
 
 use crate::catalog::columns::LibraryColumn;
 use crate::catalog::{self, books, render, tags};
+use crate::cli::LibraryColumnArgs;
 use crate::config::paths::resolve_config_dir;
 use crate::config::{self, CatalogEntry, Registry};
 
@@ -35,8 +36,7 @@ pub fn dispatch_add(
 }
 
 pub fn dispatch_ls(
-    columns: Option<String>,
-    all_columns: bool,
+    view: LibraryColumnArgs,
     data_dir: Option<&Path>,
     catalog_override: Option<&str>,
     json: bool,
@@ -47,7 +47,7 @@ pub fn dispatch_ls(
         .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
     let rows = books::handle_ls(&conn).context("while listing books")?;
 
-    let selection = resolve_columns(columns.as_deref(), all_columns, json)?;
+    let selection = resolve_columns(view.columns.as_deref(), view.all_columns, json)?;
     let stdout = io::stdout();
     let mut out = stdout.lock();
     if json {
@@ -120,8 +120,18 @@ pub fn dispatch_inspect(
     Ok(())
 }
 
+#[derive(Debug, Default)]
+pub struct SearchInput {
+    pub query: Option<String>,
+    pub author: Option<String>,
+    pub tag: Vec<String>,
+    pub series: Option<String>,
+    pub rating: Option<books::RatingRange>,
+    pub view: LibraryColumnArgs,
+}
+
 pub fn dispatch_search(
-    query: String,
+    input: SearchInput,
     data_dir: Option<&Path>,
     catalog_override: Option<&str>,
     json: bool,
@@ -130,10 +140,17 @@ pub fn dispatch_search(
     let entry = resolve_entry(&registry, catalog_override)?.clone();
     let conn = catalog::open_existing(&entry.path)
         .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
-    let rows = books::handle_search(&conn, &query)
-        .with_context(|| format!("while searching for `{query}`"))?;
+    let filters = books::SearchFilters {
+        query: input.query.as_deref(),
+        author: input.author.as_deref(),
+        tags: &input.tag,
+        series: input.series.as_deref(),
+        rating: input.rating,
+    };
+    let rows = books::handle_search(&conn, &filters)
+        .with_context(|| "while searching the catalog".to_string())?;
 
-    let selection = resolve_columns(None, false, json)?;
+    let selection = resolve_columns(input.view.columns.as_deref(), input.view.all_columns, json)?;
     let stdout = io::stdout();
     let mut out = stdout.lock();
     if json {
