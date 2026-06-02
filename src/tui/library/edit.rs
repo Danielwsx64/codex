@@ -11,7 +11,7 @@ use tui_input::Input;
 
 use crate::catalog::books::{self, Book, BookUpdate};
 use crate::catalog::tags;
-use crate::tui::widgets::centered_rect;
+use crate::tui::widgets::{centered_rect, is_submit_key};
 
 const LABEL_COL_WIDTH: u16 = 14;
 const LEFT_PAD: u16 = 2;
@@ -124,6 +124,12 @@ pub fn captures_text_input(_state: &State) -> bool {
 }
 
 pub fn handle_key(state: &mut State, key: KeyEvent, catalog_dir: &Path) -> EditAction {
+    // Ctrl+S (or Ctrl+Enter where the terminal supports it) is the project-wide
+    // form submit: save from any field.
+    if is_submit_key(&key) {
+        return submit(state, catalog_dir);
+    }
+
     // Rating is special: ←/→ and digit keys, not text input.
     if state.focus == Focus::Rating {
         match key.code {
@@ -623,4 +629,95 @@ fn description_cursor(parent_area: Rect, input: &Input) -> (u16, u16) {
     let cx = inner_x.saturating_add(col as u16);
     let cy = inner_y.saturating_add(row as u16);
     (cx, cy)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::books::EmbedStatus;
+    use crossterm::event::KeyModifiers;
+    use tempfile::tempdir;
+
+    fn sample_book() -> Book {
+        Book {
+            id: 1,
+            title: "Dune".to_string(),
+            author: Some("Herbert".to_string()),
+            format: "epub".to_string(),
+            file_path: "books/1/dune.epub".to_string(),
+            added_at: "2024-01-01".to_string(),
+            description: None,
+            series_name: None,
+            series_index: None,
+            rating: None,
+            isbn: None,
+            publisher: None,
+            language: None,
+            published_date: None,
+            tags: vec![],
+            embed_status: EmbedStatus::Pending,
+            embed_synced_at: None,
+        }
+    }
+
+    #[test]
+    fn enter_advances_focus_on_text_field() {
+        let mut s = State::from_book(&sample_book(), Origin::Table);
+        s.focus = Focus::Title;
+        let dir = tempdir().unwrap();
+        let action = handle_key(
+            &mut s,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            dir.path(),
+        );
+        assert!(matches!(action, EditAction::None));
+        assert_eq!(s.focus, Focus::Author, "plain Enter advances to next field");
+    }
+
+    #[test]
+    fn ctrl_s_routes_to_save_not_focus_advance() {
+        let mut s = State::from_book(&sample_book(), Origin::Table);
+        s.focus = Focus::Title;
+        // An empty dir has no catalog, so the save attempt surfaces an error
+        // instead of advancing focus — proof that Ctrl+S routed to submit.
+        let dir = tempdir().unwrap();
+        let action = handle_key(
+            &mut s,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            dir.path(),
+        );
+        assert!(matches!(action, EditAction::None));
+        assert!(s.error.is_some(), "Ctrl+S must attempt to save");
+        assert_eq!(s.focus, Focus::Title, "focus must not advance on Ctrl+S");
+    }
+
+    #[test]
+    fn ctrl_enter_also_routes_to_save() {
+        let mut s = State::from_book(&sample_book(), Origin::Table);
+        s.focus = Focus::Title;
+        let dir = tempdir().unwrap();
+        let action = handle_key(
+            &mut s,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+            dir.path(),
+        );
+        assert!(matches!(action, EditAction::None));
+        assert!(s.error.is_some(), "Ctrl+Enter must attempt to save");
+        assert_eq!(s.focus, Focus::Title);
+    }
+
+    #[test]
+    fn ctrl_enter_submits_even_from_rating_field() {
+        let mut s = State::from_book(&sample_book(), Origin::Table);
+        s.focus = Focus::Rating;
+        let dir = tempdir().unwrap();
+        let action = handle_key(
+            &mut s,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+            dir.path(),
+        );
+        assert!(matches!(action, EditAction::None));
+        assert!(s.error.is_some());
+        assert_eq!(s.focus, Focus::Rating);
+    }
 }

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crossterm::event::{Event, KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -12,7 +12,7 @@ use tui_input::Input;
 use crate::catalog::handlers;
 use crate::config::Registry;
 use crate::tui::help::{Binding, Section};
-use crate::tui::widgets::StatusMessage;
+use crate::tui::widgets::{is_submit_key, StatusMessage};
 
 const FIELD_BINDINGS: &[Binding] = &[
     Binding {
@@ -25,6 +25,10 @@ const FIELD_BINDINGS: &[Binding] = &[
     },
     Binding {
         keys: "Enter",
+        desc: "next field (Save/Cancel on those buttons)",
+    },
+    Binding {
+        keys: "Ctrl+S",
         desc: "submit",
     },
     Binding {
@@ -39,7 +43,7 @@ const KIND_FIELD_BINDINGS: &[Binding] = &[
         desc: "toggle init / add",
     },
     Binding {
-        keys: "Tab",
+        keys: "Tab / Enter",
         desc: "next field",
     },
     Binding {
@@ -47,7 +51,7 @@ const KIND_FIELD_BINDINGS: &[Binding] = &[
         desc: "previous field",
     },
     Binding {
-        keys: "Enter",
+        keys: "Ctrl+S",
         desc: "submit",
     },
     Binding {
@@ -96,10 +100,19 @@ pub enum Focus {
     Name,
     Path,
     Description,
+    Save,
+    Cancel,
 }
 
 impl Focus {
-    const ORDER: [Focus; 4] = [Focus::Kind, Focus::Name, Focus::Path, Focus::Description];
+    const ORDER: [Focus; 6] = [
+        Focus::Kind,
+        Focus::Name,
+        Focus::Path,
+        Focus::Description,
+        Focus::Save,
+        Focus::Cancel,
+    ];
 
     fn next(self) -> Self {
         let idx = Self::ORDER.iter().position(|f| *f == self).unwrap_or(0);
@@ -160,6 +173,12 @@ pub fn handle_key(
     registry: &mut Registry,
     config_dir: &Path,
 ) -> WizardAction {
+    // Ctrl+S (or Ctrl+Enter where the terminal supports it) is the project-wide
+    // form submit: create from any field.
+    if is_submit_key(&key) {
+        return submit(state, registry, config_dir);
+    }
+
     match key.code {
         KeyCode::Esc => return WizardAction::Cancel(state.origin),
         KeyCode::Tab => {
@@ -173,7 +192,14 @@ pub fn handle_key(
             state.focus = state.focus.prev();
             return WizardAction::None;
         }
-        KeyCode::Enter => return submit(state, registry, config_dir),
+        KeyCode::Enter => match state.focus {
+            Focus::Save => return submit(state, registry, config_dir),
+            Focus::Cancel => return WizardAction::Cancel(state.origin),
+            _ => {
+                state.focus = state.focus.next();
+                return WizardAction::None;
+            }
+        },
         _ => {}
     }
 
@@ -189,7 +215,7 @@ pub fn handle_key(
 
     let event = Event::Key(key);
     match state.focus {
-        Focus::Kind => {}
+        Focus::Kind | Focus::Save | Focus::Cancel => {}
         Focus::Name => {
             state.name.handle_event(&event);
         }
@@ -248,7 +274,7 @@ fn submit(state: &mut State, registry: &mut Registry, config_dir: &Path) -> Wiza
 }
 
 pub fn captures_text_input(state: &State) -> bool {
-    !matches!(state.focus, Focus::Kind)
+    matches!(state.focus, Focus::Name | Focus::Path | Focus::Description)
 }
 
 fn try_path_complete(state: &mut State) -> bool {
@@ -340,6 +366,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
             Constraint::Length(3), // name
             Constraint::Length(3), // path
             Constraint::Length(3), // description
+            Constraint::Length(1), // buttons
             Constraint::Length(2), // error / hint
             Constraint::Min(0),
         ])
@@ -374,21 +401,55 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         state.focus == Focus::Description,
     );
 
+    render_buttons(frame, layout[5], state);
+
     if let Some(err) = &state.error {
         let p = Paragraph::new(Line::from(Span::styled(
             err.clone(),
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )));
-        frame.render_widget(p, layout[5]);
+        frame.render_widget(p, layout[6]);
     } else {
         let p = Paragraph::new(Line::from(Span::styled(
             "init creates db + books/; add registers an existing catalog directory",
             Style::default().fg(Color::DarkGray),
         )));
-        frame.render_widget(p, layout[5]);
+        frame.render_widget(p, layout[6]);
     }
 
     place_cursor(frame, &layout, state);
+}
+
+fn render_buttons(frame: &mut Frame<'_>, area: Rect, state: &State) {
+    let buttons = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(12),
+            Constraint::Length(2),
+            Constraint::Length(12),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    render_button(frame, buttons[0], "[ Save ]", state.focus == Focus::Save);
+    render_button(
+        frame,
+        buttons[2],
+        "[ Cancel ]",
+        state.focus == Focus::Cancel,
+    );
+}
+
+fn render_button(frame: &mut Frame<'_>, area: Rect, label: &str, focused: bool) {
+    let style = if focused {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let p = Paragraph::new(Span::styled(label, style)).alignment(Alignment::Center);
+    frame.render_widget(p, area);
 }
 
 fn render_kind(frame: &mut Frame<'_>, area: Rect, state: &State) {
@@ -435,7 +496,7 @@ fn field_block(title: &str, focused: bool) -> Block<'_> {
 
 fn place_cursor(frame: &mut Frame<'_>, layout: &[Rect], state: &State) {
     let (input, area) = match state.focus {
-        Focus::Kind => return,
+        Focus::Kind | Focus::Save | Focus::Cancel => return,
         Focus::Name => (&state.name, layout[2]),
         Focus::Path => (&state.path, layout[3]),
         Focus::Description => (&state.description, layout[4]),
@@ -459,6 +520,14 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl_enter() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
+    }
+
+    fn ctrl_s() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
     }
 
     fn type_text(state: &mut State, text: &str, registry: &mut Registry, cfg: &Path) {
@@ -489,6 +558,10 @@ mod tests {
         // cwd is empty → no further completion → advance.
         handle_key(&mut s, key(KeyCode::Tab), &mut reg, cfg.path());
         assert_eq!(s.focus, Focus::Description);
+        handle_key(&mut s, key(KeyCode::Tab), &mut reg, cfg.path());
+        assert_eq!(s.focus, Focus::Save);
+        handle_key(&mut s, key(KeyCode::Tab), &mut reg, cfg.path());
+        assert_eq!(s.focus, Focus::Cancel);
         handle_key(&mut s, key(KeyCode::Tab), &mut reg, cfg.path());
         assert_eq!(s.focus, Focus::Kind);
     }
@@ -614,13 +687,72 @@ mod tests {
         type_text(&mut s, "main", &mut reg, &cfg);
         handle_key(&mut s, key(KeyCode::Tab), &mut reg, &cfg);
         type_text(&mut s, cat.to_str().unwrap(), &mut reg, &cfg);
-        let action = handle_key(&mut s, key(KeyCode::Enter), &mut reg, &cfg);
+        // Ctrl+S is the portable submit chord; it works from any field.
+        let action = handle_key(&mut s, ctrl_s(), &mut reg, &cfg);
         assert!(matches!(
             action,
             WizardAction::Submitted(Origin::Welcome, _)
         ));
         assert_eq!(reg.catalogs.len(), 1);
         assert_eq!(reg.catalogs[0].name, "main");
+    }
+
+    #[test]
+    fn ctrl_enter_also_submits_where_supported() {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        fs::create_dir_all(&cfg).unwrap();
+        let cat = dir.path().join("lib");
+        let mut s = State::new(Origin::Welcome);
+        let mut reg = Registry::default();
+        type_text(&mut s, "main", &mut reg, &cfg);
+        s.path = Input::default().with_value(cat.to_string_lossy().into_owned());
+        let action = handle_key(&mut s, ctrl_enter(), &mut reg, &cfg);
+        assert!(matches!(
+            action,
+            WizardAction::Submitted(Origin::Welcome, _)
+        ));
+    }
+
+    #[test]
+    fn enter_advances_field_without_submitting() {
+        let mut s = State::new(Origin::Welcome);
+        let mut reg = Registry::default();
+        let cfg = tempdir().unwrap();
+        assert_eq!(s.focus, Focus::Name);
+        let action = handle_key(&mut s, key(KeyCode::Enter), &mut reg, cfg.path());
+        assert!(matches!(action, WizardAction::None));
+        assert_eq!(s.focus, Focus::Path);
+        assert!(reg.catalogs.is_empty());
+    }
+
+    #[test]
+    fn enter_on_save_button_submits() {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        fs::create_dir_all(&cfg).unwrap();
+        let cat = dir.path().join("lib");
+        let mut s = State::new(Origin::Welcome);
+        let mut reg = Registry::default();
+        type_text(&mut s, "main", &mut reg, &cfg);
+        s.path = Input::default().with_value(cat.to_string_lossy().into_owned());
+        s.focus = Focus::Save;
+        let action = handle_key(&mut s, key(KeyCode::Enter), &mut reg, &cfg);
+        assert!(matches!(
+            action,
+            WizardAction::Submitted(Origin::Welcome, _)
+        ));
+        assert_eq!(reg.catalogs.len(), 1);
+    }
+
+    #[test]
+    fn enter_on_cancel_button_cancels() {
+        let mut s = State::new(Origin::Catalogs);
+        let mut reg = Registry::default();
+        let cfg = tempdir().unwrap();
+        s.focus = Focus::Cancel;
+        let action = handle_key(&mut s, key(KeyCode::Enter), &mut reg, cfg.path());
+        assert!(matches!(action, WizardAction::Cancel(Origin::Catalogs)));
     }
 
     #[test]
@@ -634,7 +766,7 @@ mod tests {
         // skip name, fill path
         handle_key(&mut s, key(KeyCode::Tab), &mut reg, &cfg);
         type_text(&mut s, "/tmp/foo", &mut reg, &cfg);
-        let action = handle_key(&mut s, key(KeyCode::Enter), &mut reg, &cfg);
+        let action = handle_key(&mut s, ctrl_enter(), &mut reg, &cfg);
         assert!(matches!(action, WizardAction::None));
         assert!(s.error.is_some());
         assert!(reg.catalogs.is_empty());
@@ -650,10 +782,16 @@ mod tests {
     }
 
     #[test]
-    fn captures_text_input_only_outside_kind() {
+    fn captures_text_input_only_on_text_fields() {
         let mut s = State::new(Origin::Welcome);
-        assert!(captures_text_input(&s));
-        s.focus = Focus::Kind;
-        assert!(!captures_text_input(&s));
+        assert!(captures_text_input(&s)); // Name
+        for f in [Focus::Kind, Focus::Save, Focus::Cancel] {
+            s.focus = f;
+            assert!(!captures_text_input(&s), "{f:?} must not capture text");
+        }
+        for f in [Focus::Name, Focus::Path, Focus::Description] {
+            s.focus = f;
+            assert!(captures_text_input(&s), "{f:?} must capture text");
+        }
     }
 }

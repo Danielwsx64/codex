@@ -9,6 +9,7 @@ use ratatui::{Frame, Terminal};
 
 use crate::config::Registry;
 use crate::tui::catalogs;
+use crate::tui::confirm;
 use crate::tui::help;
 use crate::tui::library;
 use crate::tui::new_catalog;
@@ -30,6 +31,7 @@ pub struct App {
     pub screen: Screen,
     pub palette: Option<palette::State>,
     pub help: Option<help::State>,
+    pub confirm: Option<confirm::State>,
     pub status: Option<StatusMessage>,
     pub should_quit: bool,
     pub terminal_too_small: bool,
@@ -50,6 +52,7 @@ impl App {
             screen,
             palette: None,
             help: None,
+            confirm: None,
             status: None,
             should_quit: false,
             terminal_too_small: false,
@@ -100,6 +103,17 @@ impl App {
             return Ok(());
         }
 
+        if self.confirm.is_some() {
+            // Ctrl+C is the hard exit and bypasses the guard it would normally
+            // open; every other key drives the dialog.
+            if is_ctrl_c(&key) {
+                self.should_quit = true;
+                return Ok(());
+            }
+            self.handle_confirm(key);
+            return Ok(());
+        }
+
         if self.palette.is_some() {
             self.handle_palette(key);
             return Ok(());
@@ -118,9 +132,16 @@ impl App {
             return Ok(());
         }
 
-        if !self.captures_text_input() && is_exit_key(&key) {
-            self.should_quit = true;
-            return Ok(());
+        // Ctrl+C is the immediate hard exit; `q` opens a confirmation guard.
+        if !self.captures_text_input() {
+            if is_ctrl_c(&key) {
+                self.should_quit = true;
+                return Ok(());
+            }
+            if is_quit_key(&key) {
+                self.confirm = Some(confirm::State::quit());
+                return Ok(());
+            }
         }
 
         if !self.captures_text_input() && is_help_key(&key) {
@@ -137,6 +158,22 @@ impl App {
             Screen::NewCatalog(s) => new_catalog::captures_text_input(s),
             Screen::Library(s) => library::captures_text_input(s),
             _ => false,
+        }
+    }
+
+    fn handle_confirm(&mut self, key: KeyEvent) {
+        let Some(state) = self.confirm.as_mut() else {
+            return;
+        };
+        match confirm::handle_key(state, key) {
+            confirm::ConfirmAction::None => {}
+            confirm::ConfirmAction::Confirm => {
+                self.confirm = None;
+                self.should_quit = true;
+            }
+            confirm::ConfirmAction::Cancel => {
+                self.confirm = None;
+            }
         }
     }
 
@@ -323,6 +360,11 @@ impl App {
         } else {
             render_default_footer(frame, chunks[1]);
         }
+
+        // The quit guard sits above every other layer, including help/palette.
+        if let Some(confirm) = &self.confirm {
+            confirm::render(frame, chunks[0], confirm);
+        }
     }
 
     fn screen_help_sections(&self) -> Vec<help::Section> {
@@ -341,6 +383,10 @@ pub fn is_exit_key(key: &KeyEvent) -> bool {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => true,
         _ => false,
     }
+}
+
+fn is_quit_key(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('q'))
 }
 
 fn is_ctrl_c(key: &KeyEvent) -> bool {
@@ -408,12 +454,60 @@ mod tests {
     }
 
     #[test]
-    fn q_quits_on_welcome() {
+    fn q_opens_quit_confirmation_without_quitting() {
         let dir = tempdir().unwrap();
         let cfg = dir.path().join("cfg");
         fs::create_dir_all(&cfg).unwrap();
         let mut app = App::new(cfg).unwrap();
         app.dispatch(Event::Key(key(KeyCode::Char('q')))).unwrap();
+        assert!(!app.should_quit, "q must not quit immediately");
+        assert!(app.confirm.is_some(), "q must open the quit confirmation");
+    }
+
+    #[test]
+    fn confirm_enter_quits() {
+        let mut app = fresh_app();
+        app.dispatch(Event::Key(key(KeyCode::Char('q')))).unwrap();
+        // OK is focused by default; Enter confirms.
+        app.dispatch(Event::Key(key(KeyCode::Enter))).unwrap();
+        assert!(app.should_quit);
+        assert!(app.confirm.is_none());
+    }
+
+    #[test]
+    fn confirm_esc_cancels_and_keeps_running() {
+        let mut app = fresh_app();
+        app.dispatch(Event::Key(key(KeyCode::Char('q')))).unwrap();
+        app.dispatch(Event::Key(key(KeyCode::Esc))).unwrap();
+        assert!(!app.should_quit);
+        assert!(app.confirm.is_none(), "Esc must dismiss the dialog");
+    }
+
+    #[test]
+    fn confirm_enter_on_cancel_button_keeps_running() {
+        let mut app = fresh_app();
+        app.dispatch(Event::Key(key(KeyCode::Char('q')))).unwrap();
+        // Move focus to Cancel, then Enter.
+        app.dispatch(Event::Key(key(KeyCode::Right))).unwrap();
+        app.dispatch(Event::Key(key(KeyCode::Enter))).unwrap();
+        assert!(!app.should_quit);
+        assert!(app.confirm.is_none());
+    }
+
+    #[test]
+    fn ctrl_c_quits_immediately_without_confirmation() {
+        let mut app = fresh_app();
+        app.dispatch(Event::Key(ctrl(KeyCode::Char('c')))).unwrap();
+        assert!(app.should_quit);
+        assert!(app.confirm.is_none());
+    }
+
+    #[test]
+    fn ctrl_c_quits_even_with_confirmation_open() {
+        let mut app = fresh_app();
+        app.dispatch(Event::Key(key(KeyCode::Char('q')))).unwrap();
+        assert!(app.confirm.is_some());
+        app.dispatch(Event::Key(ctrl(KeyCode::Char('c')))).unwrap();
         assert!(app.should_quit);
     }
 

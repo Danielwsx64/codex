@@ -83,7 +83,11 @@ const SEARCH_BINDINGS: &[Binding] = &[
         desc: "previous field",
     },
     Binding {
-        keys: "Enter (on Apply)",
+        keys: "Enter",
+        desc: "next field (apply on Apply button)",
+    },
+    Binding {
+        keys: "Ctrl+S",
         desc: "apply filter",
     },
     Binding {
@@ -151,11 +155,15 @@ const EDIT_BINDINGS: &[Binding] = &[
         desc: "previous field",
     },
     Binding {
-        keys: "Enter (on Save)",
-        desc: "commit changes",
+        keys: "Enter",
+        desc: "next field (Save/Cancel on those buttons)",
     },
     Binding {
-        keys: "Enter (on Cancel)",
+        keys: "Ctrl+S",
+        desc: "save changes",
+    },
+    Binding {
+        keys: "Esc",
         desc: "discard changes",
     },
 ];

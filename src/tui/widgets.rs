@@ -1,8 +1,27 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
+
+// Project-wide form convention: plain Enter moves between fields, the submit
+// chord fires the form's primary action (Save / Apply / create). The canonical
+// chord is Ctrl+S — it survives raw mode and terminal multiplexers (tmux,
+// screen) everywhere. Ctrl+Enter is accepted too, but only terminals that
+// negotiate keyboard enhancement (see TerminalGuard) can distinguish it from a
+// bare Enter; most terminals and any tmux session cannot, which is why Ctrl+S
+// is the one we document. The on-screen action button + Enter is the last-ditch
+// fallback.
+pub fn is_submit_key(key: &KeyEvent) -> bool {
+    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return false;
+    }
+    matches!(
+        key.code,
+        KeyCode::Enter | KeyCode::Char('s') | KeyCode::Char('S')
+    )
+}
 
 #[derive(Debug, Clone)]
 pub struct StatusMessage {
@@ -111,4 +130,31 @@ pub fn render_modal(frame: &mut Frame<'_>, area: Rect, title: &str, lines: Vec<L
     frame.render_widget(block, rect);
     let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
     frame.render_widget(paragraph, inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn k(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn submit_key_accepts_ctrl_s_and_ctrl_enter() {
+        assert!(is_submit_key(&k(KeyCode::Char('s'), KeyModifiers::CONTROL)));
+        assert!(is_submit_key(&k(KeyCode::Char('S'), KeyModifiers::CONTROL)));
+        assert!(is_submit_key(&k(KeyCode::Enter, KeyModifiers::CONTROL)));
+    }
+
+    #[test]
+    fn submit_key_rejects_plain_keys() {
+        assert!(!is_submit_key(&k(KeyCode::Enter, KeyModifiers::NONE)));
+        assert!(!is_submit_key(&k(KeyCode::Char('s'), KeyModifiers::NONE)));
+        // Ctrl on an unrelated key is not a submit.
+        assert!(!is_submit_key(&k(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL
+        )));
+    }
 }

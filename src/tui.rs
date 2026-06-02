@@ -2,15 +2,20 @@ use std::io::{self, Stdout};
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
+    LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 pub mod app;
 pub mod catalogs;
+pub mod confirm;
 pub mod help;
 pub mod library;
 pub mod new_catalog;
@@ -33,6 +38,9 @@ pub fn run(data_dir: Option<&Path>) -> Result<()> {
 
 struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<Stdout>>,
+    // Whether we pushed keyboard enhancement flags and must pop them on exit.
+    // Only set on terminals that report support, so the pop stays balanced.
+    keyboard_enhanced: bool,
 }
 
 impl TerminalGuard {
@@ -40,14 +48,32 @@ impl TerminalGuard {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
+        // Best-effort: on terminals that negotiate it, DISAMBIGUATE_ESCAPE_CODES
+        // lets Ctrl+Enter be reported as a distinct chord. Most terminals (and
+        // any tmux/screen session) can't, so the portable form-submit chord is
+        // Ctrl+S (see widgets::is_submit_key); this just enables Ctrl+Enter as a
+        // bonus where supported.
+        let keyboard_enhanced = matches!(supports_keyboard_enhancement(), Ok(true));
+        if keyboard_enhanced {
+            execute!(
+                stdout,
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            )?;
+        }
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
-        Ok(Self { terminal })
+        Ok(Self {
+            terminal,
+            keyboard_enhanced,
+        })
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        if self.keyboard_enhanced {
+            let _ = execute!(self.terminal.backend_mut(), PopKeyboardEnhancementFlags);
+        }
         let _ = disable_raw_mode();
         let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
         let _ = self.terminal.show_cursor();

@@ -9,7 +9,7 @@ use tui_input::Input;
 
 use crate::catalog::books::RatingRange;
 use crate::tui::library::{ActiveFilter, FilterCriteria, FilterKind};
-use crate::tui::widgets::centered_rect;
+use crate::tui::widgets::{centered_rect, is_submit_key};
 
 const LABEL_COL_WIDTH: u16 = 12;
 const LEFT_PAD: u16 = 2;
@@ -102,6 +102,12 @@ pub fn captures_text_input(_state: &State) -> bool {
 }
 
 pub fn handle_key(state: &mut State, key: KeyEvent) -> SearchAction {
+    // Ctrl+S (or Ctrl+Enter where the terminal supports it) is the project-wide
+    // form submit: apply from any field.
+    if is_submit_key(&key) {
+        return apply(state);
+    }
+
     match key.code {
         KeyCode::Esc => return SearchAction::Cancel,
         KeyCode::Tab | KeyCode::Down => {
@@ -477,5 +483,39 @@ mod tests {
             handle_key(&mut s, key(KeyCode::Esc)),
             SearchAction::Cancel
         ));
+    }
+
+    #[test]
+    fn enter_advances_field_without_applying() {
+        let mut s = State::from_filter(None);
+        s.focus = Focus::Query;
+        type_text(&mut s, "dune");
+        let action = handle_key(&mut s, key(KeyCode::Enter));
+        assert!(matches!(action, SearchAction::None));
+        assert_eq!(s.focus, Focus::Author, "plain Enter advances to next field");
+    }
+
+    #[test]
+    fn ctrl_s_applies_from_any_field() {
+        let mut s = State::from_filter(None);
+        s.focus = Focus::Query;
+        type_text(&mut s, "dune");
+        let action = handle_key(
+            &mut s,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        );
+        match action {
+            SearchAction::Apply(c) => assert_eq!(c.query.as_deref(), Some("dune")),
+            _ => panic!("expected Apply from Ctrl+S"),
+        }
+    }
+
+    #[test]
+    fn ctrl_enter_also_applies() {
+        let mut s = State::from_filter(None);
+        s.focus = Focus::Query;
+        type_text(&mut s, "dune");
+        let action = handle_key(&mut s, KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+        assert!(matches!(action, SearchAction::Apply(_)));
     }
 }
