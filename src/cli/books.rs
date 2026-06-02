@@ -10,6 +10,7 @@ use crate::config::{self, CatalogEntry, Registry};
 
 pub fn dispatch_add(
     paths: Vec<PathBuf>,
+    force: bool,
     data_dir: Option<&Path>,
     catalog_override: Option<&str>,
     json: bool,
@@ -18,7 +19,7 @@ pub fn dispatch_add(
     let entry = resolve_entry(&registry, catalog_override)?.clone();
     let mut conn = catalog::open_existing(&entry.path)
         .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
-    let outcome = books::handle_add(&mut conn, &entry.path, &paths);
+    let outcome = books::handle_add(&mut conn, &entry.path, &paths, force);
     let stdout = io::stdout();
     let mut out = stdout.lock();
     if json {

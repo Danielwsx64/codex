@@ -187,6 +187,8 @@ struct BookAddJson<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    existing_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     stored_path: Option<&'a Path>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'a str>,
@@ -211,6 +213,13 @@ pub fn render_book_add_human<W: Write>(outcome: &BookAddOutcome, w: &mut W) -> i
                     src = row.source.display(),
                 )?;
             }
+            AddStatus::Duplicate { existing_id } => {
+                writeln!(
+                    w,
+                    "Skipped `{src}`: duplicate of book #{existing_id} (use --force to import anyway)",
+                    src = row.source.display(),
+                )?;
+            }
             AddStatus::Failed { reason } => {
                 writeln!(
                     w,
@@ -225,14 +234,20 @@ pub fn render_book_add_human<W: Write>(outcome: &BookAddOutcome, w: &mut W) -> i
 
 pub fn render_book_add_jsonl<W: Write>(outcome: &BookAddOutcome, w: &mut W) -> io::Result<()> {
     for row in &outcome.rows {
+        let mut existing_id = None;
         let (status, reason) = match &row.status {
             AddStatus::Imported => ("imported", None),
+            AddStatus::Duplicate { existing_id: id } => {
+                existing_id = Some(*id);
+                ("duplicate", None)
+            }
             AddStatus::Failed { reason } => ("failed", Some(reason.as_str())),
         };
         let value = BookAddJson {
             source: &row.source,
             status,
             id: row.book_id,
+            existing_id,
             stored_path: row.stored_path.as_deref(),
             reason,
         };

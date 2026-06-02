@@ -70,9 +70,10 @@ fn inspect_unknown_title_errors() {
 fn inspect_ambiguous_title_lists_ids() {
     let f = Fixture::new();
     f.init_lib();
-    // Import the same epub twice to get two books with identical title.
+    // Import the same epub twice to get two books with identical title;
+    // --force is required since the second add is otherwise deduplicated.
     f.cdx()
-        .arg("add")
+        .args(["add", "--force"])
         .arg(Fixture::fixture("sample.epub"))
         .arg(Fixture::fixture("sample.epub"))
         .assert()

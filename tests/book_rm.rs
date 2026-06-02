@@ -123,8 +123,10 @@ fn rm_unknown_target_errors_without_touching_catalog() {
 fn rm_ambiguous_target_errors_without_deleting() {
     let f = Fixture::new();
     let lib = f.init_lib();
+    // --force is required: the second add of the same file is otherwise
+    // deduplicated, and we need two identically-titled books here.
     f.cdx()
-        .arg("add")
+        .args(["add", "--force"])
         .arg(Fixture::fixture("sample.epub"))
         .arg(Fixture::fixture("sample.epub"))
         .assert()

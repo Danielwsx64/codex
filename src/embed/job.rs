@@ -109,6 +109,19 @@ impl Job {
         let step = match embed::embed_into_file(&item.abs_path, item.format, &item.book) {
             Ok(EmbedOutcome::Written) => {
                 let _ = books::mark_embed_synced(conn, item.id);
+                // The embed rewrote the file, so its whole-file hash changed.
+                // Record the post-embed hash too, so re-importing this stored
+                // copy is recognized as a duplicate. Best-effort.
+                if let Ok(hash) = crate::fingerprint::hash_full(&item.abs_path) {
+                    let _ = books::record_fingerprints(
+                        conn,
+                        item.id,
+                        &[crate::fingerprint::Fingerprint {
+                            kind: crate::fingerprint::Kind::Full,
+                            hash,
+                        }],
+                    );
+                }
                 self.succeeded += 1;
                 StepOutcome::Synced {
                     id: item.id,

@@ -58,6 +58,11 @@ pub enum Command {
     Add {
         #[arg(required = true, value_name = "PATH", num_args = 1.., help = "One or more ebook files to import")]
         paths: Vec<PathBuf>,
+        #[arg(
+            long,
+            help = "Import even if a file with the same content is already in the catalog"
+        )]
+        force: bool,
     },
     #[command(about = "List books in the current catalog")]
     Ls {

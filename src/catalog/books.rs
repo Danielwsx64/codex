@@ -1,10 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use thiserror::Error;
 
 use crate::catalog::{books_path, tags, BOOKS_DIRNAME};
+use crate::fingerprint;
 use crate::import;
 
 #[derive(Debug, Error)]
@@ -13,6 +14,8 @@ pub enum Error {
     Catalog(#[from] crate::catalog::Error),
     #[error(transparent)]
     Import(#[from] import::Error),
+    #[error(transparent)]
+    Fingerprint(#[from] fingerprint::Error),
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
     #[error("io error on {}: {source}", .path.display())]
@@ -111,6 +114,7 @@ pub struct BookUpdate {
 #[derive(Debug)]
 pub enum AddStatus {
     Imported,
+    Duplicate { existing_id: i64 },
     Failed { reason: String },
 }
 
@@ -138,6 +142,12 @@ impl AddOutcome {
         self.rows
             .iter()
             .any(|r| matches!(r.status, AddStatus::Failed { .. }))
+    }
+
+    pub fn any_duplicate(&self) -> bool {
+        self.rows
+            .iter()
+            .any(|r| matches!(r.status, AddStatus::Duplicate { .. }))
     }
 }
 
@@ -169,22 +179,43 @@ pub struct SeriesOutcome {
     pub changed: bool,
 }
 
-pub fn handle_add(conn: &mut Connection, catalog_dir: &Path, paths: &[PathBuf]) -> AddOutcome {
+enum ImportResult {
+    New { id: i64, stored: PathBuf },
+    Duplicate { existing_id: i64 },
+}
+
+pub fn handle_add(
+    conn: &mut Connection,
+    catalog_dir: &Path,
+    paths: &[PathBuf],
+    force: bool,
+) -> AddOutcome {
+    // Backfill fingerprints for pre-existing books so dedup covers the catalog
+    // as it stands today; idempotent, so the cost is paid only once.
+    if let Err(err) = ensure_fingerprints(conn, catalog_dir) {
+        tracing::warn!(error = %err, "fingerprint backfill failed; continuing");
+    }
     let mut rows = Vec::with_capacity(paths.len());
     for src in paths {
-        let row = import_one(conn, catalog_dir, src);
+        let row = import_one(conn, catalog_dir, src, force);
         rows.push(row);
     }
     AddOutcome { rows }
 }
 
-fn import_one(conn: &mut Connection, catalog_dir: &Path, src: &Path) -> AddRow {
-    match import_inner(conn, catalog_dir, src) {
-        Ok((id, stored)) => AddRow {
+fn import_one(conn: &mut Connection, catalog_dir: &Path, src: &Path, force: bool) -> AddRow {
+    match import_inner(conn, catalog_dir, src, force) {
+        Ok(ImportResult::New { id, stored }) => AddRow {
             source: src.to_path_buf(),
             status: AddStatus::Imported,
             book_id: Some(id),
             stored_path: Some(stored),
+        },
+        Ok(ImportResult::Duplicate { existing_id }) => AddRow {
+            source: src.to_path_buf(),
+            status: AddStatus::Duplicate { existing_id },
+            book_id: None,
+            stored_path: None,
         },
         Err(e) => AddRow {
             source: src.to_path_buf(),
@@ -197,9 +228,21 @@ fn import_one(conn: &mut Connection, catalog_dir: &Path, src: &Path) -> AddRow {
     }
 }
 
-fn import_inner(conn: &mut Connection, catalog_dir: &Path, src: &Path) -> Result<(i64, PathBuf)> {
+fn import_inner(
+    conn: &mut Connection,
+    catalog_dir: &Path,
+    src: &Path,
+    force: bool,
+) -> Result<ImportResult> {
     let format = import::detect(src)?;
     let metadata = import::extract(src, format).unwrap_or_default();
+
+    let fingerprints = fingerprint::compute(src, format)?;
+    if !force {
+        if let Some(existing_id) = find_book_by_hashes(conn, &fingerprints)? {
+            return Ok(ImportResult::Duplicate { existing_id });
+        }
+    }
 
     let fallback_stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("book");
     let filename = import::build_filename(&metadata, format, fallback_stem);
@@ -232,6 +275,7 @@ fn import_inner(conn: &mut Connection, catalog_dir: &Path, src: &Path) -> Result
         ],
     )?;
     let id = tx.last_insert_rowid();
+    record_fingerprints(&tx, id, &fingerprints)?;
 
     if !metadata.tags.is_empty() {
         tags::sync(&tx, id, &metadata.tags)?;
@@ -257,7 +301,67 @@ fn import_inner(conn: &mut Connection, catalog_dir: &Path, src: &Path) -> Result
         params![rel, id],
     )?;
     tx.commit()?;
-    Ok((id, dest_abs))
+    Ok(ImportResult::New {
+        id,
+        stored: dest_abs,
+    })
+}
+
+pub fn record_fingerprints(
+    conn: &Connection,
+    book_id: i64,
+    fingerprints: &[fingerprint::Fingerprint],
+) -> Result<()> {
+    let mut stmt = conn.prepare_cached(
+        "INSERT OR IGNORE INTO book_hashes (book_id, kind, hash) VALUES (?1, ?2, ?3)",
+    )?;
+    for fp in fingerprints {
+        stmt.execute(params![book_id, fp.kind.as_str(), fp.hash])?;
+    }
+    Ok(())
+}
+
+pub fn find_book_by_hashes(
+    conn: &Connection,
+    fingerprints: &[fingerprint::Fingerprint],
+) -> Result<Option<i64>> {
+    if fingerprints.is_empty() {
+        return Ok(None);
+    }
+    let placeholders = vec!["?"; fingerprints.len()].join(",");
+    let sql = format!("SELECT book_id FROM book_hashes WHERE hash IN ({placeholders}) LIMIT 1");
+    let hashes = fingerprints.iter().map(|f| f.hash.as_str());
+    let id = conn
+        .prepare(&sql)?
+        .query_row(rusqlite::params_from_iter(hashes), |r| r.get(0))
+        .optional()?;
+    Ok(id)
+}
+
+fn ensure_fingerprints(conn: &Connection, catalog_dir: &Path) -> Result<()> {
+    let pending: Vec<(i64, String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, format, file_path FROM books b
+             WHERE NOT EXISTS (SELECT 1 FROM book_hashes h WHERE h.book_id = b.id)",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<std::result::Result<_, _>>()?
+    };
+    for (id, format, file_path) in pending {
+        let Some(fmt) = import::Format::parse_label(&format) else {
+            continue;
+        };
+        let abs = catalog_dir.join(&file_path);
+        match fingerprint::compute(&abs, fmt) {
+            Ok(fps) => record_fingerprints(conn, id, &fps)?,
+            // Best-effort: a missing or unreadable file just stays without a
+            // fingerprint until it is touched again.
+            Err(err) => {
+                tracing::warn!(book_id = id, %format, error = %err, "skipping fingerprint backfill")
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn handle_ls(conn: &Connection) -> Result<Vec<Book>> {
@@ -1365,5 +1469,46 @@ mod tests {
         assert_eq!(book.title, "Whatever");
         // file_path was not touched because the file is gone.
         assert!(book.file_path.contains("Old"));
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(name)
+    }
+
+    #[test]
+    fn add_same_file_twice_is_deduplicated() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let mut conn = open_fresh(&cat);
+        let src = dir.path().join("book.epub");
+        fs::copy(fixture("sample.epub"), &src).unwrap();
+
+        let first = handle_add(&mut conn, &cat, &[src.clone()], false);
+        assert!(matches!(first.rows[0].status, AddStatus::Imported));
+
+        let second = handle_add(&mut conn, &cat, &[src.clone()], false);
+        assert!(matches!(
+            second.rows[0].status,
+            AddStatus::Duplicate { existing_id: 1 }
+        ));
+
+        assert_eq!(handle_ls(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn add_force_imports_duplicate() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let mut conn = open_fresh(&cat);
+        let src = dir.path().join("book.epub");
+        fs::copy(fixture("sample.epub"), &src).unwrap();
+
+        handle_add(&mut conn, &cat, &[src.clone()], false);
+        let forced = handle_add(&mut conn, &cat, &[src.clone()], true);
+        assert!(matches!(forced.rows[0].status, AddStatus::Imported));
+        assert_eq!(handle_ls(&conn).unwrap().len(), 2);
     }
 }

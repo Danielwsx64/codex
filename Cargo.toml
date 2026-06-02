@@ -32,6 +32,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 rusqlite_migration = "1.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+# Content fingerprints for import dedup; stdlib has no hashing primitive.
+sha2 = "0.10"
 tabwriter = "1.4"
 tempfile = "3"
 thiserror = "1"

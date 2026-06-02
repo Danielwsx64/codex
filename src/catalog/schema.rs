@@ -4,6 +4,7 @@ const INITIAL: &str = include_str!("../../migrations/0001_initial.sql");
 const METADATA: &str = include_str!("../../migrations/0002_metadata.sql");
 const SETTINGS: &str = include_str!("../../migrations/0003_settings.sql");
 const EMBED_STATE: &str = include_str!("../../migrations/0004_embed_state.sql");
+const CONTENT_HASH: &str = include_str!("../../migrations/0005_content_hash.sql");
 
 pub fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
@@ -11,6 +12,7 @@ pub fn migrations() -> Migrations<'static> {
         M::up(METADATA),
         M::up(SETTINGS),
         M::up(EMBED_STATE),
+        M::up(CONTENT_HASH),
     ])
 }
 

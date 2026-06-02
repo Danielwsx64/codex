@@ -5,6 +5,7 @@ pub mod catalog;
 pub mod cli;
 pub mod config;
 pub mod embed;
+pub mod fingerprint;
 pub mod import;
 pub mod tui;
 pub mod welcome;
@@ -26,8 +27,9 @@ pub fn run() -> Result<()> {
         Some(Command::Catalog(cmd)) => {
             cli::catalog::dispatch(cmd, cli.data_dir.as_deref(), cli.json)
         }
-        Some(Command::Add { paths }) => cli::books::dispatch_add(
+        Some(Command::Add { paths, force }) => cli::books::dispatch_add(
             paths,
+            force,
             cli.data_dir.as_deref(),
             cli.catalog.as_deref(),
             cli.json,

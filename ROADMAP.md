@@ -131,6 +131,11 @@ Ciclo de embed: qualquer edit (`cdx edit` ou TUI `e`) marca o livro como
       `language`, `published_date` em `books`; tabela `tags` + `book_tags`
 - [x] Migration `0004_embed_state.sql` — colunas `embed_status` +
       `embed_synced_at` em `books`
+- [x] Migration `0005_content_hash.sql` + dedup no `cdx add` — fingerprint
+      SHA-256 por livro (tabela `book_hashes`); EPUB ganha hash de conteúdo
+      estável (ignora o OPF reescrito pelo embed), demais formatos hash do
+      arquivo + hash pós-embed acumulado; duplicata é pulada com aviso, `--force`
+      reimporta; backfill best-effort dos livros existentes
 - [x] Extração no `cdx add` estendida (EPUB/MOBI/PDF) para popular os
       novos campos quando disponíveis no arquivo
 

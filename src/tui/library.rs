@@ -150,6 +150,17 @@ const EMBED_JOB_BINDINGS: &[Binding] = &[
     },
 ];
 
+const ADD_RESULT_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "↑↓ / j k",
+        desc: "scroll",
+    },
+    Binding {
+        keys: "Esc / Enter",
+        desc: "close summary",
+    },
+];
+
 const COLUMNS_BINDINGS: &[Binding] = &[
     Binding {
         keys: "↑↓ / j k",
@@ -183,6 +194,10 @@ pub fn help_sections(state: &State) -> Vec<Section> {
             title: "Add files",
             bindings: ADD_TREE_BINDINGS,
         }],
+        Some(Overlay::AddResult(_)) => vec![Section {
+            title: "Add summary",
+            bindings: ADD_RESULT_BINDINGS,
+        }],
         Some(Overlay::Edit(edit_state)) => {
             let mut sections = vec![Section {
                 title: "Edit metadata",
@@ -207,6 +222,7 @@ pub fn help_sections(state: &State) -> Vec<Section> {
     }
 }
 
+pub mod add_result;
 pub mod columns;
 pub mod edit;
 pub mod embed_job;
@@ -239,6 +255,7 @@ pub enum Overlay {
         title: String,
     },
     AddTree(AddTreeState),
+    AddResult(add_result::State),
     Edit(Box<edit::State>),
     EmbedJob(Box<Job>),
     Columns(columns::State),
@@ -371,6 +388,7 @@ fn handle_overlay_key(state: &mut State, key: KeyEvent) -> LibraryAction {
         },
         Some(Overlay::ConfirmRm { id, .. }) => handle_confirm_key(state, key, id),
         Some(Overlay::AddTree(_)) => handle_tree_key(state, key),
+        Some(Overlay::AddResult(_)) => handle_add_result_key(state, key),
         Some(Overlay::Edit(_)) => handle_edit_key(state, key),
         Some(Overlay::EmbedJob(_)) => handle_embed_job_key(state, key),
         Some(Overlay::Columns(_)) => handle_columns_key(state, key),
@@ -822,22 +840,41 @@ fn perform_import(state: &mut State, paths: Vec<PathBuf>) -> LibraryAction {
     match result {
         Ok(outcome) => {
             state.refresh();
-            let total = outcome.rows.len();
-            let ok = outcome
-                .rows
-                .iter()
-                .filter(|r| matches!(r.status, books::AddStatus::Imported))
-                .count();
-            let msg = if ok == total {
-                StatusMessage::info(format!("imported {ok} / {total} file(s)"))
-            } else if ok == 0 {
-                StatusMessage::error(format!("failed to import all {total} file(s)"))
+            let summary = add_result::State::from_outcome(&outcome);
+            // Skips and failures deserve an explicit, dismissable list; a clean
+            // all-imported run stays on the lightweight status line.
+            if summary.is_noteworthy() {
+                state.overlay = Some(Overlay::AddResult(summary));
+                LibraryAction::None
             } else {
-                StatusMessage::error(format!("imported {ok} / {total} file(s); some failed"))
-            };
-            LibraryAction::Status(msg)
+                let total = outcome.rows.len();
+                LibraryAction::Status(StatusMessage::info(format!(
+                    "imported {total} / {total} file(s)"
+                )))
+            }
         }
         Err(err) => LibraryAction::Status(StatusMessage::error(err)),
+    }
+}
+
+fn handle_add_result_key(state: &mut State, key: KeyEvent) -> LibraryAction {
+    let Some(Overlay::AddResult(result)) = state.overlay.as_mut() else {
+        return LibraryAction::None;
+    };
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => {
+            result.scroll_down();
+            LibraryAction::None
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            result.scroll_up();
+            LibraryAction::None
+        }
+        KeyCode::Esc | KeyCode::Enter => {
+            state.overlay = None;
+            LibraryAction::None
+        }
+        _ => LibraryAction::None,
     }
 }
 
@@ -853,7 +890,8 @@ fn remove_book(dir: &Path, id: i64, keep: bool) -> std::result::Result<books::Rm
 
 fn import_files(dir: &Path, paths: &[PathBuf]) -> std::result::Result<books::AddOutcome, String> {
     let mut conn = catalog::open_existing(dir).map_err(|e| e.to_string())?;
-    Ok(books::handle_add(&mut conn, dir, paths))
+    // TUI imports never force; duplicates are reported in the status line.
+    Ok(books::handle_add(&mut conn, dir, paths, false))
 }
 
 fn read_tree(dir: &Path) -> std::result::Result<Vec<TreeEntry>, String> {
@@ -952,6 +990,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         }) => render_inspect_modal(frame, area, book.as_ref(), absolute_path),
         Some(Overlay::ConfirmRm { id, title }) => render_confirm_modal(frame, area, *id, title),
         Some(Overlay::AddTree(tree)) => render_tree_modal(frame, area, tree),
+        Some(Overlay::AddResult(result)) => add_result::render(frame, area, result),
         Some(Overlay::Edit(edit_state)) => edit::render(frame, area, edit_state.as_ref()),
         Some(Overlay::EmbedJob(job)) => embed_job::render(frame, area, job),
         Some(Overlay::Columns(picker)) => columns::render(frame, area, picker),
@@ -1535,6 +1574,44 @@ mod tests {
         assert!(matches!(action, LibraryAction::Status(_)));
         assert!(state.overlay.is_none());
         assert_eq!(state.rows.len(), 1);
+    }
+
+    fn import_cursor_file(state: &mut State) -> LibraryAction {
+        handle_key(state, key(KeyCode::Char('a')));
+        if let Some(Overlay::AddTree(tree)) = state.overlay.as_mut() {
+            tree.cursor = tree
+                .entries
+                .iter()
+                .position(|e| matches!(e, TreeEntry::File { .. }))
+                .unwrap();
+        }
+        handle_key(state, key(KeyCode::Enter))
+    }
+
+    #[test]
+    fn add_tree_duplicate_opens_result_modal_and_esc_closes() {
+        let (tmp, _cat, reg) = setup_with_catalog();
+        let workdir = tmp.path().join("incoming");
+        fs::create_dir_all(&workdir).unwrap();
+        fs::write(workdir.join("solo.epub"), b"x").unwrap();
+        let mut state = State::load(&reg);
+        state.cwd = workdir.clone();
+
+        // First import succeeds cleanly → lightweight status, no modal.
+        let first = import_cursor_file(&mut state);
+        assert!(matches!(first, LibraryAction::Status(_)));
+        assert!(state.overlay.is_none());
+        assert_eq!(state.rows.len(), 1);
+
+        // Re-importing the same file is a duplicate → explicit result modal.
+        let second = import_cursor_file(&mut state);
+        assert!(matches!(second, LibraryAction::None));
+        assert!(matches!(state.overlay, Some(Overlay::AddResult(_))));
+        assert_eq!(state.rows.len(), 1, "duplicate must not add a book");
+
+        // Esc dismisses the summary.
+        handle_key(&mut state, key(KeyCode::Esc));
+        assert!(state.overlay.is_none());
     }
 
     #[test]
