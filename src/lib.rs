@@ -66,9 +66,12 @@ pub fn run() -> Result<()> {
             cli.catalog.as_deref(),
             cli.json,
         ),
-        Some(Command::Edit { target }) => {
-            cli::edit::dispatch(target, cli.data_dir.as_deref(), cli.catalog.as_deref())
-        }
+        Some(Command::Edit { target }) => cli::edit::dispatch(
+            target,
+            cli.data_dir.as_deref(),
+            cli.catalog.as_deref(),
+            cli.json,
+        ),
         Some(Command::Tag { target, tags }) => cli::books::dispatch_tag(
             target,
             tags,
@@ -113,7 +116,7 @@ pub fn run() -> Result<()> {
             cli.json,
         ),
         Some(Command::Embed(EmbedCmd::Sync)) => {
-            cli::embed::dispatch_sync(cli.data_dir.as_deref(), cli.catalog.as_deref())
+            cli::embed::dispatch_sync(cli.data_dir.as_deref(), cli.catalog.as_deref(), cli.json)
         }
         None => print_welcome(),
     }

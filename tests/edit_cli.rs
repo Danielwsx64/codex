@@ -128,6 +128,61 @@ fn edit_invalid_toml_aborts_and_preserves_tempfile() {
 }
 
 #[test]
+fn edit_no_change_json_emits_one_object() {
+    let f = Fixture::new();
+    setup(&f);
+
+    let output = f
+        .cdx_json()
+        .env("EDITOR", "/bin/true")
+        .args(["edit", "1"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    let lines: Vec<_> = text.lines().collect();
+    assert_eq!(lines.len(), 1, "expected one JSONL line, got {text:?}");
+    let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(v["action"], "edit");
+    assert_eq!(v["status"], "no_change");
+    assert_eq!(v["id"], 1);
+    assert_eq!(v["changed"], false);
+}
+
+#[test]
+fn edit_applied_change_json_reports_updated() {
+    let f = Fixture::new();
+    setup(&f);
+
+    let editor = f.work_dir.path().join("rewrite-title.sh");
+    write_editor_script(
+        &editor,
+        "#!/bin/sh\nsed -i 's/^title = .*/title = \"Brand New Title\"/' \"$1\"\n",
+    );
+
+    let output = f
+        .cdx_json()
+        .env("EDITOR", &editor)
+        .args(["edit", "1"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    let lines: Vec<_> = text.lines().collect();
+    assert_eq!(lines.len(), 1);
+    let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(v["action"], "edit");
+    assert_eq!(v["status"], "updated");
+    assert_eq!(v["id"], 1);
+    assert_eq!(v["title"], "Brand New Title");
+    assert_eq!(v["changed"], true);
+}
+
+#[test]
 fn edit_unknown_id_errors_before_editor() {
     let f = Fixture::new();
     setup(&f);

@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tempfile::Builder;
 
-use crate::catalog::{self, books, tags};
+use crate::catalog::{self, books, render, tags};
 
 const HEADER: &str = "\
 # cdx edit
@@ -75,10 +75,18 @@ impl BookMetadataDoc {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct EditOutcome {
+    pub id: i64,
+    pub title: String,
+    pub changed: bool,
+}
+
 pub fn dispatch(
     target: String,
     data_dir: Option<&Path>,
     catalog_override: Option<&str>,
+    json: bool,
 ) -> Result<()> {
     let registry = crate::cli::books::load(data_dir)?;
     let entry = crate::cli::books::resolve_entry(&registry, catalog_override)?.clone();
@@ -105,40 +113,80 @@ pub fn dispatch(
     let edited = fs::read_to_string(temp.path())
         .with_context(|| format!("failed to read edited file at {}", temp.path().display()))?;
 
-    if edited == original_toml {
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
-        writeln!(out, "no changes")?;
-        return Ok(());
-    }
-
-    let parsed: BookMetadataDoc = match toml::from_str::<BookMetadataDoc>(strip_header(&edited)) {
-        Ok(v) => v,
-        Err(err) => {
-            let kept = preserve_tempfile(temp.into_temp_path())?;
-            bail!(
-                "invalid TOML in edited file: {err}\ntempfile preserved at {}",
-                kept.display()
-            );
+    let outcome = if edited == original_toml {
+        EditOutcome {
+            id,
+            title: book.title.clone(),
+            changed: false,
+        }
+    } else {
+        let parsed: BookMetadataDoc = match toml::from_str::<BookMetadataDoc>(strip_header(&edited))
+        {
+            Ok(v) => v,
+            Err(err) => {
+                let kept = preserve_tempfile(temp.into_temp_path())?;
+                bail!(
+                    "invalid TOML in edited file: {err}\ntempfile preserved at {}",
+                    kept.display()
+                );
+            }
+        };
+        let update = parsed.into_update();
+        match books::handle_update(&mut conn, &entry.path, id, update) {
+            Ok(updated) => EditOutcome {
+                id,
+                title: updated.title,
+                changed: true,
+            },
+            Err(err) => {
+                let kept = preserve_tempfile(temp.into_temp_path())?;
+                return Err(anyhow::Error::new(err).context(format!(
+                    "update failed; tempfile preserved at {}",
+                    kept.display()
+                )));
+            }
         }
     };
 
-    let update = parsed.into_update();
-    match books::handle_update(&mut conn, &entry.path, id, update) {
-        Ok(updated) => {
-            let stdout = io::stdout();
-            let mut out = stdout.lock();
-            writeln!(out, "Updated book {id}: {}", updated.title)?;
-            Ok(())
-        }
-        Err(err) => {
-            let kept = preserve_tempfile(temp.into_temp_path())?;
-            Err(anyhow::Error::new(err).context(format!(
-                "update failed; tempfile preserved at {}",
-                kept.display()
-            )))
-        }
+    render::emit(
+        json,
+        |w| render_edit_human(&outcome, w),
+        |w| render_edit_jsonl(&outcome, w),
+    )?;
+    Ok(())
+}
+
+fn render_edit_human<W: Write>(outcome: &EditOutcome, w: &mut W) -> io::Result<()> {
+    if outcome.changed {
+        writeln!(w, "Updated book {}: {}", outcome.id, outcome.title)
+    } else {
+        writeln!(w, "no changes")
     }
+}
+
+#[derive(Serialize)]
+struct EditJson<'a> {
+    action: &'static str,
+    status: &'static str,
+    id: i64,
+    title: &'a str,
+    changed: bool,
+}
+
+fn render_edit_jsonl<W: Write>(outcome: &EditOutcome, w: &mut W) -> io::Result<()> {
+    let value = EditJson {
+        action: "edit",
+        status: if outcome.changed {
+            "updated"
+        } else {
+            "no_change"
+        },
+        id: outcome.id,
+        title: &outcome.title,
+        changed: outcome.changed,
+    };
+    serde_json::to_writer(&mut *w, &value)?;
+    writeln!(w)
 }
 
 fn render_toml(doc: &BookMetadataDoc, id: i64) -> Result<String> {

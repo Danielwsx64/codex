@@ -1,4 +1,3 @@
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
@@ -21,14 +20,11 @@ pub fn dispatch_add(
     let mut conn = catalog::open_existing(&entry.path)
         .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
     let outcome = books::handle_add(&mut conn, &entry.path, &paths, force);
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    if json {
-        render::render_book_add_jsonl(&outcome, &mut out)?;
-    } else {
-        render::render_book_add_human(&outcome, &mut out)?;
-    }
-    out.flush()?;
+    render::emit(
+        json,
+        |w| render::render_book_add_human(&outcome, w),
+        |w| render::render_book_add_jsonl(&outcome, w),
+    )?;
     if outcome.any_failed() && !outcome.any_imported() {
         anyhow::bail!("no files were imported");
     }
@@ -48,14 +44,11 @@ pub fn dispatch_ls(
     let rows = books::handle_ls(&conn).context("while listing books")?;
 
     let selection = resolve_columns(view.columns.as_deref(), view.all_columns, json)?;
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    if json {
-        render::render_book_ls_jsonl(&rows, &selection, &mut out)?;
-    } else {
-        render::render_book_ls_human(&rows, &selection, &mut out)?;
-    }
-    out.flush()?;
+    render::emit(
+        json,
+        |w| render::render_book_ls_human(&rows, &selection, w),
+        |w| render::render_book_ls_jsonl(&rows, &selection, w),
+    )?;
     Ok(())
 }
 
@@ -109,14 +102,11 @@ pub fn dispatch_inspect(
     let book = books::handle_inspect(&conn, &target)
         .with_context(|| format!("while inspecting `{target}`"))?;
     let absolute_path = entry.path.join(&book.file_path);
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    if json {
-        render::render_book_inspect_jsonl(&book, &absolute_path, &mut out)?;
-    } else {
-        render::render_book_inspect_human(&book, &absolute_path, &mut out)?;
-    }
-    out.flush()?;
+    render::emit(
+        json,
+        |w| render::render_book_inspect_human(&book, &absolute_path, w),
+        |w| render::render_book_inspect_jsonl(&book, &absolute_path, w),
+    )?;
     Ok(())
 }
 
@@ -151,14 +141,11 @@ pub fn dispatch_search(
         .with_context(|| "while searching the catalog".to_string())?;
 
     let selection = resolve_columns(input.view.columns.as_deref(), input.view.all_columns, json)?;
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    if json {
-        render::render_book_ls_jsonl(&rows, &selection, &mut out)?;
-    } else {
-        render::render_book_ls_human(&rows, &selection, &mut out)?;
-    }
-    out.flush()?;
+    render::emit(
+        json,
+        |w| render::render_book_ls_human(&rows, &selection, w),
+        |w| render::render_book_ls_jsonl(&rows, &selection, w),
+    )?;
     Ok(())
 }
 
@@ -175,14 +162,11 @@ pub fn dispatch_rm(
         .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
     let outcome = books::handle_rm(&mut conn, &entry.path, &target, keep)
         .with_context(|| format!("while removing `{target}`"))?;
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    if json {
-        render::render_book_rm_jsonl(&outcome, &mut out)?;
-    } else {
-        render::render_book_rm_human(&outcome, &mut out)?;
-    }
-    out.flush()?;
+    render::emit(
+        json,
+        |w| render::render_book_rm_human(&outcome, w),
+        |w| render::render_book_rm_jsonl(&outcome, w),
+    )?;
     Ok(())
 }
 
@@ -203,14 +187,11 @@ pub fn dispatch_tag(
         .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
     let outcome = books::handle_tag_add(&mut conn, &target, &names)
         .with_context(|| format!("while tagging `{target}`"))?;
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    if json {
-        render::render_tag_jsonl(&outcome, &mut out)?;
-    } else {
-        render::render_tag_human(&outcome, &mut out)?;
-    }
-    out.flush()?;
+    render::emit(
+        json,
+        |w| render::render_tag_human(&outcome, w),
+        |w| render::render_tag_jsonl(&outcome, w),
+    )?;
     Ok(())
 }
 
@@ -239,14 +220,11 @@ pub fn dispatch_untag(
             .with_context(|| format!("while untagging `{target}`"))?
     };
 
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    if json {
-        render::render_untag_jsonl(&outcome, &mut out)?;
-    } else {
-        render::render_untag_human(&outcome, &mut out)?;
-    }
-    out.flush()?;
+    render::emit(
+        json,
+        |w| render::render_untag_human(&outcome, w),
+        |w| render::render_untag_jsonl(&outcome, w),
+    )?;
     Ok(())
 }
 
@@ -263,14 +241,11 @@ pub fn dispatch_rate(
         .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
     let outcome = books::handle_rate(&mut conn, &target, rating)
         .with_context(|| format!("while rating `{target}`"))?;
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    if json {
-        render::render_rate_jsonl(&outcome, &mut out)?;
-    } else {
-        render::render_rate_human(&outcome, &mut out)?;
-    }
-    out.flush()?;
+    render::emit(
+        json,
+        |w| render::render_rate_human(&outcome, w),
+        |w| render::render_rate_jsonl(&outcome, w),
+    )?;
     Ok(())
 }
 
@@ -289,14 +264,11 @@ pub fn dispatch_series(
         .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
     let outcome = books::handle_series(&mut conn, &target, name.as_deref(), index, clear)
         .with_context(|| format!("while setting series for `{target}`"))?;
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    if json {
-        render::render_series_jsonl(&outcome, &mut out)?;
-    } else {
-        render::render_series_human(&outcome, &mut out)?;
-    }
-    out.flush()?;
+    render::emit(
+        json,
+        |w| render::render_series_human(&outcome, w),
+        |w| render::render_series_jsonl(&outcome, w),
+    )?;
     Ok(())
 }
 

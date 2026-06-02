@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, StdoutLock, Write};
 use std::path::Path;
 
 use serde::Serialize;
@@ -10,6 +10,23 @@ use crate::catalog::books::{
 };
 use crate::catalog::columns::LibraryColumn;
 use crate::catalog::handlers::{AddOutcome, CatalogRow, InitOutcome, RmOutcome, UseOutcome};
+
+// Single funnel used by every dispatcher that picks between a human and a
+// JSONL renderer. Locks stdout, runs the matching closure, flushes.
+pub fn emit<H, J>(json: bool, human: H, jsonl: J) -> io::Result<()>
+where
+    H: FnOnce(&mut StdoutLock<'_>) -> io::Result<()>,
+    J: FnOnce(&mut StdoutLock<'_>) -> io::Result<()>,
+{
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    if json {
+        jsonl(&mut out)?;
+    } else {
+        human(&mut out)?;
+    }
+    out.flush()
+}
 
 #[derive(Serialize)]
 struct LsJson<'a> {
