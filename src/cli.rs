@@ -4,6 +4,8 @@ use clap::{ArgAction, Parser, Subcommand};
 
 pub mod books;
 pub mod catalog;
+pub mod edit;
+pub mod embed;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -58,7 +60,28 @@ pub enum Command {
         paths: Vec<PathBuf>,
     },
     #[command(about = "List books in the current catalog")]
-    Ls,
+    Ls {
+        #[arg(
+            long,
+            value_name = "LIST",
+            conflicts_with = "all_columns",
+            help = "Comma-separated column slugs to show, in display order (use --all-columns to list every slug)"
+        )]
+        columns: Option<String>,
+        #[arg(
+            long,
+            help = "Show every available column (id, title, author, tags, series, rating, publisher, language, published, isbn, format, embed)"
+        )]
+        all_columns: bool,
+    },
+    #[command(about = "Edit a book's metadata in $EDITOR (TOML)")]
+    Edit {
+        #[arg(
+            value_name = "ID_OR_TITLE",
+            help = "Numeric id, or exact title (case-insensitive)"
+        )]
+        target: String,
+    },
     #[command(about = "Show metadata for a book (by numeric id or title)")]
     Inspect {
         #[arg(
@@ -80,6 +103,14 @@ pub enum Command {
         )]
         keep: bool,
     },
+    #[command(subcommand, about = "Manage metadata embedded into book files")]
+    Embed(EmbedCmd),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EmbedCmd {
+    #[command(about = "Embed catalog metadata into every book with status `pending`")]
+    Sync,
 }
 
 #[derive(Subcommand, Debug)]

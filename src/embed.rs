@@ -8,6 +8,7 @@ use crate::catalog::books::Book;
 use crate::import::Format;
 
 pub mod epub;
+pub mod job;
 pub mod pdf;
 
 #[derive(Debug)]

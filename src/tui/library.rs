@@ -10,11 +10,12 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use crate::catalog::books::{self, Book};
+use crate::catalog::books::{self, Book, EmbedStatus};
 use crate::catalog::columns::LibraryColumn;
 use crate::catalog::settings;
 use crate::catalog::{self};
 use crate::config::Registry;
+use crate::embed::job::Job;
 use crate::embed::{self, EmbedOutcome};
 use crate::import;
 use crate::tui::help::{Binding, Section};
@@ -239,7 +240,7 @@ pub enum Overlay {
     },
     AddTree(AddTreeState),
     Edit(Box<edit::State>),
-    EmbedJob(Box<embed_job::State>),
+    EmbedJob(Box<Job>),
     Columns(columns::State),
 }
 
@@ -487,6 +488,9 @@ fn close_edit(state: &mut State, origin: edit::Origin, saved: Option<Book>) -> L
 }
 
 fn embed_from_inspect(state: &mut State) -> LibraryAction {
+    let Some(ctx) = state.catalog.clone() else {
+        return LibraryAction::Status(StatusMessage::error("no catalog selected"));
+    };
     let (path, format, book) = match state.overlay.as_ref() {
         Some(Overlay::Inspect {
             book,
@@ -505,14 +509,43 @@ fn embed_from_inspect(state: &mut State) -> LibraryAction {
         }
         _ => return LibraryAction::None,
     };
+    // Respect the persisted state: don't re-touch files already synced and
+    // don't retry formats we've already classified as impossible to embed.
+    match book.embed_status {
+        EmbedStatus::Synced => {
+            return LibraryAction::Status(StatusMessage::info(
+                "already synced — edit metadata first to mark it pending",
+            ));
+        }
+        EmbedStatus::Unsupported => {
+            return LibraryAction::Status(StatusMessage::error(format!(
+                "embed not supported for {}",
+                format.label()
+            )));
+        }
+        EmbedStatus::Pending => {}
+    }
     match embed::embed_into_file(&path, format, &book) {
-        Ok(EmbedOutcome::Written) => LibraryAction::Status(StatusMessage::info(format!(
-            "metadata embedded in {}",
-            path.display()
-        ))),
-        Ok(EmbedOutcome::Unsupported { format }) => LibraryAction::Status(StatusMessage::error(
-            format!("embed not supported for {}", format.label()),
-        )),
+        Ok(EmbedOutcome::Written) => {
+            if let Ok(conn) = catalog::open_existing(&ctx.dir) {
+                let _ = books::mark_embed_synced(&conn, book.id);
+            }
+            state.refresh();
+            LibraryAction::Status(StatusMessage::info(format!(
+                "metadata embedded in {}",
+                path.display()
+            )))
+        }
+        Ok(EmbedOutcome::Unsupported { format }) => {
+            if let Ok(conn) = catalog::open_existing(&ctx.dir) {
+                let _ = books::mark_embed_unsupported(&conn, book.id);
+            }
+            state.refresh();
+            LibraryAction::Status(StatusMessage::error(format!(
+                "embed not supported for {}",
+                format.label()
+            )))
+        }
         Err(err) => LibraryAction::Status(StatusMessage::error(format!("embed failed: {err}"))),
     }
 }
@@ -560,10 +593,18 @@ fn open_embed_job(state: &mut State) -> LibraryAction {
     let Some(ctx) = state.catalog.clone() else {
         return LibraryAction::Status(StatusMessage::error("no catalog selected"));
     };
-    if state.rows.is_empty() {
-        return LibraryAction::Status(StatusMessage::info("nothing to embed"));
+    let pending: Vec<Book> = state
+        .rows
+        .iter()
+        .filter(|b| b.embed_status == EmbedStatus::Pending)
+        .cloned()
+        .collect();
+    if pending.is_empty() {
+        return LibraryAction::Status(StatusMessage::info(
+            "nothing to embed (no books pending sync)",
+        ));
     }
-    let job = embed_job::State::from_rows(&state.rows, &ctx.dir);
+    let job = Job::from_books(&pending, &ctx.dir);
     state.overlay = Some(Overlay::EmbedJob(Box::new(job)));
     LibraryAction::None
 }
@@ -597,9 +638,16 @@ pub fn has_pending_embed_job(state: &State) -> bool {
 }
 
 pub fn advance_embed_job(state: &mut State) {
-    if let Some(Overlay::EmbedJob(job)) = state.overlay.as_mut() {
-        embed_job::advance(job);
-    }
+    let Some(ctx) = state.catalog.clone() else {
+        return;
+    };
+    let Some(Overlay::EmbedJob(job)) = state.overlay.as_mut() else {
+        return;
+    };
+    let Ok(conn) = catalog::open_existing(&ctx.dir) else {
+        return;
+    };
+    job.advance(&conn);
 }
 
 fn open_confirm_rm(state: &mut State) -> LibraryAction {
@@ -905,7 +953,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         Some(Overlay::ConfirmRm { id, title }) => render_confirm_modal(frame, area, *id, title),
         Some(Overlay::AddTree(tree)) => render_tree_modal(frame, area, tree),
         Some(Overlay::Edit(edit_state)) => edit::render(frame, area, edit_state.as_ref()),
-        Some(Overlay::EmbedJob(job)) => embed_job::render(frame, area, job.as_ref()),
+        Some(Overlay::EmbedJob(job)) => embed_job::render(frame, area, job),
         Some(Overlay::Columns(picker)) => columns::render(frame, area, picker),
         None => {}
     }
@@ -1709,6 +1757,121 @@ mod tests {
                 assert!(job.done);
             }
             _ => panic!("expected EmbedJob overlay"),
+        }
+    }
+
+    #[test]
+    fn ctrl_w_skips_books_already_synced() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        let synced_id = insert_book_with_file(&cat, "Already Synced", "A");
+        insert_book_with_file(&cat, "Still Pending", "A");
+        let conn = catalog::open_existing(&cat).unwrap();
+        books::mark_embed_synced(&conn, synced_id).unwrap();
+        drop(conn);
+
+        let mut state = State::load(&reg);
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+        );
+        match state.overlay.as_ref() {
+            Some(Overlay::EmbedJob(job)) => {
+                assert_eq!(job.total, 1, "synced book must be excluded from the queue");
+                assert_eq!(job.queue.len(), 1);
+                assert_eq!(
+                    job.queue[0].title, "Still Pending",
+                    "only the pending book should be queued"
+                );
+            }
+            _ => panic!("expected EmbedJob overlay"),
+        }
+    }
+
+    #[test]
+    fn ctrl_w_with_only_synced_books_reports_nothing_to_embed() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        let id = insert_book_with_file(&cat, "Only One", "A");
+        let conn = catalog::open_existing(&cat).unwrap();
+        books::mark_embed_synced(&conn, id).unwrap();
+        drop(conn);
+
+        let mut state = State::load(&reg);
+        let action = handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+        );
+        match action {
+            LibraryAction::Status(s) => {
+                assert!(
+                    s.text.contains("nothing to embed"),
+                    "got status: {}",
+                    s.text
+                );
+            }
+            other => panic!("expected status message, got {other:?}"),
+        }
+        assert!(state.overlay.is_none(), "overlay must not open");
+    }
+
+    #[test]
+    fn w_on_inspect_synced_book_is_no_op() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        let id = insert_book_with_file(&cat, "Sync Me", "Author");
+        let conn = catalog::open_existing(&cat).unwrap();
+        books::mark_embed_synced(&conn, id).unwrap();
+        let synced_at_before: Option<String> = conn
+            .query_row("SELECT embed_synced_at FROM books WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        drop(conn);
+
+        let mut state = State::load(&reg);
+        handle_key(&mut state, key(KeyCode::Char('i')));
+        let action = handle_key(&mut state, key(KeyCode::Char('w')));
+        match action {
+            LibraryAction::Status(s) => {
+                assert!(s.text.contains("already synced"), "got status: {}", s.text);
+            }
+            other => panic!("expected status message, got {other:?}"),
+        }
+        // Status row unchanged: still synced, same timestamp.
+        let conn = catalog::open_existing(&cat).unwrap();
+        let (status, synced_at): (String, Option<String>) = conn
+            .query_row(
+                "SELECT embed_status, embed_synced_at FROM books WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "synced");
+        assert_eq!(synced_at, synced_at_before);
+    }
+
+    #[test]
+    fn w_on_inspect_unsupported_book_does_not_retry() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        // Insert a mobi (unsupported format) and mark it unsupported explicitly.
+        let conn = catalog::open_existing(&cat).unwrap();
+        conn.execute(
+            "INSERT INTO books (title, author, format, file_path) VALUES ('M', 'A', 'mobi', 'books/1/A_-_M.mobi')",
+            [],
+        )
+        .unwrap();
+        let id: i64 = conn
+            .query_row("SELECT id FROM books WHERE title='M'", [], |r| r.get(0))
+            .unwrap();
+        books::mark_embed_unsupported(&conn, id).unwrap();
+        drop(conn);
+
+        let mut state = State::load(&reg);
+        handle_key(&mut state, key(KeyCode::Char('i')));
+        let action = handle_key(&mut state, key(KeyCode::Char('w')));
+        match action {
+            LibraryAction::Status(s) => {
+                assert!(s.text.contains("not supported"), "got status: {}", s.text);
+            }
+            other => panic!("expected status message, got {other:?}"),
         }
     }
 

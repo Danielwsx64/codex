@@ -364,6 +364,8 @@ mod tests {
             language: Some("en".into()),
             published_date: Some("2025-01-01".into()),
             tags: vec!["sci-fi".into(), "classic".into()],
+            embed_status: crate::catalog::books::EmbedStatus::Pending,
+            embed_synced_at: None,
         }
     }
 

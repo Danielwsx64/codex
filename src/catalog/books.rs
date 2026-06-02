@@ -46,6 +46,32 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbedStatus {
+    Pending,
+    Synced,
+    Unsupported,
+}
+
+impl EmbedStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EmbedStatus::Pending => "pending",
+            EmbedStatus::Synced => "synced",
+            EmbedStatus::Unsupported => "unsupported",
+        }
+    }
+
+    pub fn parse_label(s: &str) -> Option<Self> {
+        match s {
+            "pending" => Some(EmbedStatus::Pending),
+            "synced" => Some(EmbedStatus::Synced),
+            "unsupported" => Some(EmbedStatus::Unsupported),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Book {
     pub id: i64,
@@ -63,6 +89,8 @@ pub struct Book {
     pub language: Option<String>,
     pub published_date: Option<String>,
     pub tags: Vec<String>,
+    pub embed_status: EmbedStatus,
+    pub embed_synced_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -214,7 +242,8 @@ pub fn handle_ls(conn: &Connection) -> Result<Vec<Book>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, author, format, file_path, added_at,
                 description, series_name, series_index, rating,
-                isbn, publisher, language, published_date
+                isbn, publisher, language, published_date,
+                embed_status, embed_synced_at
          FROM books
          ORDER BY LOWER(title), id",
     )?;
@@ -224,6 +253,40 @@ pub fn handle_ls(conn: &Connection) -> Result<Vec<Book>> {
         b.tags = tags::fetch_for_book(conn, b.id)?;
     }
     Ok(books)
+}
+
+pub fn fetch_pending(conn: &Connection) -> Result<Vec<Book>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, author, format, file_path, added_at,
+                description, series_name, series_index, rating,
+                isbn, publisher, language, published_date,
+                embed_status, embed_synced_at
+         FROM books
+         WHERE embed_status = 'pending'
+         ORDER BY id",
+    )?;
+    let rows: rusqlite::Result<Vec<Book>> = stmt.query_map([], row_to_book)?.collect();
+    let mut books = rows?;
+    for b in &mut books {
+        b.tags = tags::fetch_for_book(conn, b.id)?;
+    }
+    Ok(books)
+}
+
+pub fn mark_embed_synced(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE books SET embed_status = 'synced', embed_synced_at = datetime('now') WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(())
+}
+
+pub fn mark_embed_unsupported(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE books SET embed_status = 'unsupported', embed_synced_at = NULL WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(())
 }
 
 pub fn handle_inspect(conn: &Connection, target: &str) -> Result<Book> {
@@ -268,11 +331,14 @@ pub fn handle_update(
         .map(str::to_string);
 
     let tx = conn.transaction()?;
+    // Any metadata edit makes the file embed stale, so reset tracking back to
+    // pending — `cdx embed sync` (or the TUI) will re-embed and flip it.
     tx.execute(
         "UPDATE books
          SET title = ?1, author = ?2, description = ?3,
              series_name = ?4, series_index = ?5, rating = ?6,
-             isbn = ?7, publisher = ?8, language = ?9, published_date = ?10
+             isbn = ?7, publisher = ?8, language = ?9, published_date = ?10,
+             embed_status = 'pending', embed_synced_at = NULL
          WHERE id = ?11",
         params![
             title,
@@ -412,7 +478,7 @@ fn pick_keep_destination(rel_file_path: &str) -> Result<PathBuf> {
     })
 }
 
-fn resolve_target(conn: &Connection, target: &str) -> Result<i64> {
+pub(crate) fn resolve_target(conn: &Connection, target: &str) -> Result<i64> {
     if let Ok(id) = target.parse::<i64>() {
         let exists: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM books WHERE id = ?1)",
@@ -452,7 +518,8 @@ fn fetch_by_id(conn: &Connection, id: i64) -> Result<Book> {
         .query_row(
             "SELECT id, title, author, format, file_path, added_at,
                     description, series_name, series_index, rating,
-                    isbn, publisher, language, published_date
+                    isbn, publisher, language, published_date,
+                    embed_status, embed_synced_at
              FROM books
              WHERE id = ?1",
             params![id],
@@ -469,6 +536,8 @@ fn fetch_by_id(conn: &Connection, id: i64) -> Result<Book> {
 }
 
 fn row_to_book(row: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
+    let embed_status_raw: String = row.get(14)?;
+    let embed_status = EmbedStatus::parse_label(&embed_status_raw).unwrap_or(EmbedStatus::Pending);
     Ok(Book {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -485,6 +554,8 @@ fn row_to_book(row: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
         language: row.get(12)?,
         published_date: row.get(13)?,
         tags: Vec::new(),
+        embed_status,
+        embed_synced_at: row.get(15)?,
     })
 }
 
@@ -646,6 +717,81 @@ mod tests {
         assert_eq!(book.language.as_deref(), Some("en"));
         assert_eq!(book.published_date.as_deref(), Some("2025-01-01"));
         assert_eq!(book.tags, vec!["classic", "sci-fi"]); // ORDER BY LOWER(name)
+        assert_eq!(book.embed_status, EmbedStatus::Pending);
+        assert!(book.embed_synced_at.is_none());
+    }
+
+    #[test]
+    fn handle_update_resets_synced_to_pending() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        drop(conn);
+        let (id, _) = seed_book_with_file(&cat, "T", "A");
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        mark_embed_synced(&conn, id).unwrap();
+        let before = fetch_by_id(&conn, id).unwrap();
+        assert_eq!(before.embed_status, EmbedStatus::Synced);
+        assert!(before.embed_synced_at.is_some());
+
+        let update = BookUpdate {
+            title: "T".into(),
+            ..BookUpdate::default()
+        };
+        let after = handle_update(&mut conn, &cat, id, update).unwrap();
+        assert_eq!(after.embed_status, EmbedStatus::Pending);
+        assert!(after.embed_synced_at.is_none());
+    }
+
+    #[test]
+    fn mark_embed_synced_sets_status_and_timestamp() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "Book", None);
+        mark_embed_synced(&conn, id).unwrap();
+        let book = fetch_by_id(&conn, id).unwrap();
+        assert_eq!(book.embed_status, EmbedStatus::Synced);
+        assert!(book.embed_synced_at.is_some());
+    }
+
+    #[test]
+    fn mark_embed_unsupported_sets_status_without_timestamp() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "Book", None);
+        mark_embed_unsupported(&conn, id).unwrap();
+        let book = fetch_by_id(&conn, id).unwrap();
+        assert_eq!(book.embed_status, EmbedStatus::Unsupported);
+        assert!(book.embed_synced_at.is_none());
+    }
+
+    #[test]
+    fn fetch_pending_filters_by_status() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let a = insert_book(&conn, "A", None);
+        let b = insert_book(&conn, "B", None);
+        let c = insert_book(&conn, "C", None);
+        mark_embed_synced(&conn, a).unwrap();
+        mark_embed_unsupported(&conn, b).unwrap();
+        // c stays pending (default).
+        let rows = fetch_pending(&conn).unwrap();
+        let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![c]);
+    }
+
+    #[test]
+    fn fresh_book_starts_pending() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "Book", None);
+        let book = fetch_by_id(&conn, id).unwrap();
+        assert_eq!(book.embed_status, EmbedStatus::Pending);
+        assert!(book.embed_synced_at.is_none());
     }
 
     #[test]

@@ -7,6 +7,7 @@ use tabwriter::TabWriter;
 use crate::catalog::books::{
     AddOutcome as BookAddOutcome, AddStatus, Book, RmOutcome as BookRmOutcome,
 };
+use crate::catalog::columns::LibraryColumn;
 use crate::catalog::handlers::{AddOutcome, CatalogRow, InitOutcome, RmOutcome, UseOutcome};
 
 #[derive(Serialize)]
@@ -240,77 +241,47 @@ pub fn render_book_add_jsonl<W: Write>(outcome: &BookAddOutcome, w: &mut W) -> i
     Ok(())
 }
 
-#[derive(Serialize)]
-struct BookLsJson<'a> {
-    id: i64,
-    title: &'a str,
-    author: Option<&'a str>,
-    format: &'a str,
-    tags: &'a [String],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    series_name: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    series_index: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rating: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    publisher: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    language: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    published_date: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    isbn: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<&'a str>,
-}
-
-pub fn render_book_ls_human<W: Write>(rows: &[Book], w: &mut W) -> io::Result<()> {
+pub fn render_book_ls_human<W: Write>(
+    rows: &[Book],
+    columns: &[LibraryColumn],
+    w: &mut W,
+) -> io::Result<()> {
     if rows.is_empty() {
         writeln!(w, "No books in the current catalog. Try `cdx add <file>`.")?;
         return Ok(());
     }
     let mut tw = TabWriter::new(w).padding(2);
-    writeln!(&mut tw, "ID\tTITLE\tAUTHOR\tTAGS\tFORMAT")?;
+    let header = columns
+        .iter()
+        .map(|c| c.slug().to_ascii_uppercase())
+        .collect::<Vec<_>>()
+        .join("\t");
+    writeln!(&mut tw, "{header}")?;
     for b in rows {
-        let author = b.author.as_deref().unwrap_or("");
-        let tags = b.tags.join(", ");
-        writeln!(
-            &mut tw,
-            "{id}\t{title}\t{author}\t{tags}\t{fmt}",
-            id = b.id,
-            title = b.title,
-            fmt = b.format,
-        )?;
+        let row = columns
+            .iter()
+            .map(|c| c.render(b))
+            .collect::<Vec<_>>()
+            .join("\t");
+        writeln!(&mut tw, "{row}")?;
     }
     tw.flush()
 }
 
-pub fn render_book_ls_jsonl<W: Write>(rows: &[Book], w: &mut W) -> io::Result<()> {
+pub fn render_book_ls_jsonl<W: Write>(
+    rows: &[Book],
+    columns: &[LibraryColumn],
+    w: &mut W,
+) -> io::Result<()> {
     for b in rows {
-        let value = book_to_ls_json(b);
-        serde_json::to_writer(&mut *w, &value)?;
+        let mut obj = serde_json::Map::new();
+        for c in columns {
+            obj.insert(c.slug().to_string(), c.json_value(b));
+        }
+        serde_json::to_writer(&mut *w, &serde_json::Value::Object(obj))?;
         writeln!(w)?;
     }
     Ok(())
-}
-
-fn book_to_ls_json(b: &Book) -> BookLsJson<'_> {
-    BookLsJson {
-        id: b.id,
-        title: &b.title,
-        author: b.author.as_deref(),
-        format: &b.format,
-        tags: &b.tags,
-        series_name: b.series_name.as_deref(),
-        series_index: b.series_index,
-        rating: b.rating,
-        publisher: b.publisher.as_deref(),
-        language: b.language.as_deref(),
-        published_date: b.published_date.as_deref(),
-        isbn: b.isbn.as_deref(),
-        description: b.description.as_deref(),
-    }
 }
 
 #[derive(Serialize)]

@@ -106,8 +106,14 @@ git); o cdx mantém um registro multi-catálogo em
 
 ## v0.2 — Edição de metadados
 
-- [ ] `cdx edit <id>` — abre `$EDITOR` com TOML/YAML dos metadados —
-      TUI feita (`e` no Library abre modal com 11 campos); CLI pendente
+Ciclo de embed: qualquer edit (`cdx edit` ou TUI `e`) marca o livro como
+`embed_status = 'pending'`; o sync (`cdx embed sync`, TUI `w` ou
+`Ctrl+W`) embeda no arquivo e marca `synced` (EPUB/PDF) ou
+`unsupported` (MOBI/AZW3, não-retentável).
+
+- [x] `cdx edit <id>` — abre `$EDITOR` com TOML dos metadados; valida
+      no parse e reaproveita `handle_update` (que reseta `embed_status`
+      para `pending`); tempfile preservado em caso de erro
 - [ ] `cdx tag <id> <tag>...` / `cdx untag` — TUI: campo "Tags" no modal
       de edit (multi, comma-separated); coluna nova "tags" em `cdx ls`
       humano e JSON; CLI dedicado pendente
@@ -115,11 +121,15 @@ git); o cdx mantém um registro multi-catálogo em
       CLI pendente
 - [ ] `cdx series <id> <name> [--index N]` — TUI: campos "Series" +
       "Index" no modal; CLI pendente
+- [x] `cdx embed sync` — embeda metadados em todos os livros `pending`;
+      imprime progresso linha-a-linha + summary final
 - [x] TUI: embed de metadados em arquivo (EPUB/PDF) via tecla `w` no
       Inspect — MOBI/AZW3 retorna status "embed not supported"
 - [x] Migration `0002_metadata.sql` — colunas `description`,
       `series_name`, `series_index`, `rating`, `isbn`, `publisher`,
       `language`, `published_date` em `books`; tabela `tags` + `book_tags`
+- [x] Migration `0004_embed_state.sql` — colunas `embed_status` +
+      `embed_synced_at` em `books`
 - [x] Extração no `cdx add` estendida (EPUB/MOBI/PDF) para popular os
       novos campos quando disponíveis no arquivo
 

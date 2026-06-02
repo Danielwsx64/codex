@@ -15,7 +15,7 @@ use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, EmbedCmd};
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -32,15 +32,25 @@ pub fn run() -> Result<()> {
             cli.catalog.as_deref(),
             cli.json,
         ),
-        Some(Command::Ls) => {
-            cli::books::dispatch_ls(cli.data_dir.as_deref(), cli.catalog.as_deref(), cli.json)
-        }
+        Some(Command::Ls {
+            columns,
+            all_columns,
+        }) => cli::books::dispatch_ls(
+            columns,
+            all_columns,
+            cli.data_dir.as_deref(),
+            cli.catalog.as_deref(),
+            cli.json,
+        ),
         Some(Command::Inspect { target }) => cli::books::dispatch_inspect(
             target,
             cli.data_dir.as_deref(),
             cli.catalog.as_deref(),
             cli.json,
         ),
+        Some(Command::Edit { target }) => {
+            cli::edit::dispatch(target, cli.data_dir.as_deref(), cli.catalog.as_deref())
+        }
         Some(Command::Rm { target, keep }) => cli::books::dispatch_rm(
             target,
             keep,
@@ -48,6 +58,9 @@ pub fn run() -> Result<()> {
             cli.catalog.as_deref(),
             cli.json,
         ),
+        Some(Command::Embed(EmbedCmd::Sync)) => {
+            cli::embed::dispatch_sync(cli.data_dir.as_deref(), cli.catalog.as_deref())
+        }
         None => print_welcome(),
     }
 }

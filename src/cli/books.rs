@@ -1,8 +1,9 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 
+use crate::catalog::columns::LibraryColumn;
 use crate::catalog::{self, books, render};
 use crate::config::paths::resolve_config_dir;
 use crate::config::{self, CatalogEntry, Registry};
@@ -33,6 +34,8 @@ pub fn dispatch_add(
 }
 
 pub fn dispatch_ls(
+    columns: Option<String>,
+    all_columns: bool,
     data_dir: Option<&Path>,
     catalog_override: Option<&str>,
     json: bool,
@@ -42,15 +45,54 @@ pub fn dispatch_ls(
     let conn = catalog::open_existing(&entry.path)
         .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
     let rows = books::handle_ls(&conn).context("while listing books")?;
+
+    let selection = resolve_columns(columns.as_deref(), all_columns, json)?;
     let stdout = io::stdout();
     let mut out = stdout.lock();
     if json {
-        render::render_book_ls_jsonl(&rows, &mut out)?;
+        render::render_book_ls_jsonl(&rows, &selection, &mut out)?;
     } else {
-        render::render_book_ls_human(&rows, &mut out)?;
+        render::render_book_ls_human(&rows, &selection, &mut out)?;
     }
     out.flush()?;
     Ok(())
+}
+
+fn resolve_columns(
+    columns: Option<&str>,
+    all_columns: bool,
+    json: bool,
+) -> Result<Vec<LibraryColumn>> {
+    if let Some(list) = columns {
+        let mut out: Vec<LibraryColumn> = Vec::new();
+        for slug in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let col = LibraryColumn::from_slug(slug).ok_or_else(|| {
+                anyhow!(
+                    "unknown column `{slug}`; available: {}",
+                    LibraryColumn::ALL
+                        .iter()
+                        .map(|c| c.slug())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+            out.push(col);
+        }
+        if out.is_empty() {
+            return Err(anyhow!("--columns requires at least one slug"));
+        }
+        return Ok(out);
+    }
+    if all_columns {
+        return Ok(LibraryColumn::ALL.to_vec());
+    }
+    // No explicit selection: JSON keeps wide coverage so existing consumers
+    // see every catalog field; the human table sticks to the compact default.
+    if json {
+        Ok(LibraryColumn::ALL.to_vec())
+    } else {
+        Ok(LibraryColumn::DEFAULT.to_vec())
+    }
 }
 
 pub fn dispatch_inspect(
@@ -101,7 +143,7 @@ pub fn dispatch_rm(
     Ok(())
 }
 
-fn load(data_dir: Option<&Path>) -> Result<Registry> {
+pub(crate) fn load(data_dir: Option<&Path>) -> Result<Registry> {
     let config_dir =
         resolve_config_dir(data_dir).context("failed to resolve the cdx config directory")?;
     Registry::load(&config_dir).with_context(|| {
@@ -112,7 +154,7 @@ fn load(data_dir: Option<&Path>) -> Result<Registry> {
     })
 }
 
-fn resolve_entry<'a>(
+pub(crate) fn resolve_entry<'a>(
     registry: &'a Registry,
     catalog_override: Option<&str>,
 ) -> Result<&'a CatalogEntry> {
