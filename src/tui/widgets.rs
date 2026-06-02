@@ -49,15 +49,16 @@ pub fn render_status(frame: &mut Frame<'_>, area: Rect, status: &StatusMessage) 
     frame.render_widget(paragraph, area);
 }
 
-pub fn render_default_footer(frame: &mut Frame<'_>, area: Rect, hint: &str) {
+pub fn render_default_footer(frame: &mut Frame<'_>, area: Rect) {
+    let dim = Style::default().fg(Color::DarkGray);
+    let bold = Style::default().add_modifier(Modifier::BOLD);
     let line = Line::from(vec![
-        Span::raw(" "),
-        Span::styled(hint, Style::default().fg(Color::DarkGray)),
-        Span::raw("  "),
-        Span::styled(":", Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled(" palette  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("q", Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled(" quit ", Style::default().fg(Color::DarkGray)),
+        Span::styled("?", bold),
+        Span::styled(" help  ", dim),
+        Span::styled(":", bold),
+        Span::styled(" command  ", dim),
+        Span::styled("q", bold),
+        Span::styled(" quit ", dim),
     ]);
     let paragraph = Paragraph::new(line).alignment(Alignment::Right);
     frame.render_widget(paragraph, area);

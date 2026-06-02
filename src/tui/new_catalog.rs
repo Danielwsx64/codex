@@ -11,7 +11,62 @@ use tui_input::Input;
 
 use crate::catalog::handlers;
 use crate::config::Registry;
+use crate::tui::help::{Binding, Section};
 use crate::tui::widgets::StatusMessage;
+
+const FIELD_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "Tab",
+        desc: "next field / complete path",
+    },
+    Binding {
+        keys: "Shift+Tab",
+        desc: "previous field",
+    },
+    Binding {
+        keys: "Enter",
+        desc: "submit",
+    },
+    Binding {
+        keys: "Esc",
+        desc: "cancel",
+    },
+];
+
+const KIND_FIELD_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "←→ / Space",
+        desc: "toggle init / add",
+    },
+    Binding {
+        keys: "Tab",
+        desc: "next field",
+    },
+    Binding {
+        keys: "Shift+Tab",
+        desc: "previous field",
+    },
+    Binding {
+        keys: "Enter",
+        desc: "submit",
+    },
+    Binding {
+        keys: "Esc",
+        desc: "cancel",
+    },
+];
+
+pub fn help_sections(state: &State) -> Vec<Section> {
+    let bindings = if state.focus == Focus::Kind {
+        KIND_FIELD_BINDINGS
+    } else {
+        FIELD_BINDINGS
+    };
+    vec![Section {
+        title: "New catalog",
+        bindings,
+    }]
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -280,7 +335,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // header
+            Constraint::Length(1), // header
             Constraint::Length(3), // kind
             Constraint::Length(3), // name
             Constraint::Length(3), // path
@@ -290,16 +345,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         ])
         .split(area);
 
-    let header = Paragraph::new(vec![
-        Line::from(Span::styled(
-            "New catalog",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            "Tab next / complete path · Shift+Tab prev · Enter submit · Esc cancel",
-            Style::default().fg(Color::DarkGray),
-        )),
-    ]);
+    let header = Paragraph::new(Line::from(Span::styled(
+        "New catalog",
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
     frame.render_widget(header, layout[0]);
 
     render_kind(frame, layout[1], state);

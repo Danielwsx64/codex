@@ -9,7 +9,55 @@ use ratatui::Frame;
 
 use crate::catalog::handlers::{self, CatalogRow};
 use crate::config::Registry;
+use crate::tui::help::{Binding, Section};
 use crate::tui::widgets::{render_modal, StatusMessage};
+
+const CATALOGS_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "↑↓ / j k",
+        desc: "move selection",
+    },
+    Binding {
+        keys: "Enter",
+        desc: "switch to selected catalog",
+    },
+    Binding {
+        keys: "n",
+        desc: "new catalog (open wizard)",
+    },
+    Binding {
+        keys: "d / Delete",
+        desc: "delete selected catalog",
+    },
+];
+
+const CONFIRM_RM_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "y / Enter",
+        desc: "unregister",
+    },
+    Binding {
+        keys: "p",
+        desc: "purge files on disk",
+    },
+    Binding {
+        keys: "n / Esc",
+        desc: "cancel",
+    },
+];
+
+pub fn help_sections(state: &State) -> Vec<Section> {
+    if state.confirm.is_some() {
+        return vec![Section {
+            title: "Confirm delete",
+            bindings: CONFIRM_RM_BINDINGS,
+        }];
+    }
+    vec![Section {
+        title: "Catalogs",
+        bindings: CATALOGS_BINDINGS,
+    }]
+}
 
 #[derive(Debug)]
 pub struct State {
@@ -160,22 +208,16 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
         .split(area);
 
-    let header = Paragraph::new(vec![
-        Line::from(Span::styled(
-            "Catalogs",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            "Enter switch · n new · d delete · Esc back",
-            Style::default().fg(Color::DarkGray),
-        )),
-    ]);
+    let header = Paragraph::new(Line::from(Span::styled(
+        "Catalogs",
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
     frame.render_widget(header, layout[0]);
 
     let items: Vec<ListItem> = state

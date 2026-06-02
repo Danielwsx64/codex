@@ -170,7 +170,7 @@ com seus comandos CLI.
 - [ ] Renderização de TXT/Markdown
 - [ ] Persistir progresso de leitura por livro no catálogo
 - [ ] Navegação por capítulos / sumário
-- [ ] `?` abre help contextual com atalhos de teclado da tela ativa
+- [x] `?` abre help contextual com atalhos de teclado da tela ativa
 
 ## v1.0 — Estável
 

@@ -110,7 +110,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         .constraints([
             Constraint::Length(1), // header hint
             Constraint::Min(1),    // list
-            Constraint::Length(1), // footer hint
             Constraint::Length(1), // error
         ])
         .split(inner);
@@ -143,12 +142,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
     list_state.select(Some(state.cursor.min(LibraryColumn::ALL.len() - 1)));
     frame.render_stateful_widget(list, layout[1], &mut list_state);
 
-    let footer = Paragraph::new(Line::from(Span::styled(
-        "  ↑↓ move · Space toggle · Enter save · Esc cancel",
-        Style::default().fg(Color::DarkGray),
-    )));
-    frame.render_widget(footer, layout[2]);
-
     if let Some(err) = &state.error {
         let p = Paragraph::new(Line::from(vec![
             Span::raw("  "),
@@ -157,7 +150,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
         ]));
-        frame.render_widget(p, layout[3]);
+        frame.render_widget(p, layout[2]);
     }
 }
 

@@ -9,6 +9,7 @@ use ratatui::{Frame, Terminal};
 
 use crate::config::Registry;
 use crate::tui::catalogs;
+use crate::tui::help;
 use crate::tui::library;
 use crate::tui::new_catalog;
 use crate::tui::palette;
@@ -27,6 +28,7 @@ pub struct App {
     pub registry: Registry,
     pub screen: Screen,
     pub palette: Option<palette::State>,
+    pub help: Option<help::State>,
     pub status: Option<StatusMessage>,
     pub should_quit: bool,
 }
@@ -45,6 +47,7 @@ impl App {
             registry,
             screen,
             palette: None,
+            help: None,
             status: None,
             should_quit: false,
         })
@@ -92,8 +95,26 @@ impl App {
             return Ok(());
         }
 
+        if self.help.is_some() {
+            // Ctrl+C always quits, even with help open; help::handle_key only
+            // closes on Esc/?/q. Other keys are swallowed.
+            if is_ctrl_c(&key) {
+                self.should_quit = true;
+                return Ok(());
+            }
+            if matches!(help::handle_key(key), help::HelpAction::Close) {
+                self.help = None;
+            }
+            return Ok(());
+        }
+
         if !self.captures_text_input() && is_exit_key(&key) {
             self.should_quit = true;
+            return Ok(());
+        }
+
+        if !self.captures_text_input() && is_help_key(&key) {
+            self.help = Some(help::State);
             return Ok(());
         }
 
@@ -135,6 +156,9 @@ impl App {
             }
             palette::Command::Catalogs => {
                 self.screen = Screen::Catalogs(catalogs::State::from_registry(&self.registry));
+            }
+            palette::Command::Help => {
+                self.help = Some(help::State);
             }
         }
     }
@@ -251,23 +275,27 @@ impl App {
             Screen::Library(state) => library::render(frame, chunks[0], state),
         }
 
+        if self.help.is_some() {
+            let mut sections = vec![help::GLOBAL];
+            sections.extend(self.screen_help_sections());
+            help::render(frame, chunks[0], &sections);
+        }
+
         if let Some(palette) = &self.palette {
             palette::render(frame, chunks[1], palette);
         } else if let Some(status) = &self.status {
             render_status(frame, chunks[1], status);
         } else {
-            render_default_footer(frame, chunks[1], footer_hint(&self.screen));
+            render_default_footer(frame, chunks[1]);
         }
     }
-}
 
-fn footer_hint(screen: &Screen) -> &'static str {
-    match screen {
-        Screen::Welcome(_) => "↑↓ navigate · Enter select",
-        Screen::Catalogs(_) => "↑↓ select · Enter use · n new · d delete · Esc back",
-        Screen::NewCatalog(_) => "Tab next field · Enter submit · Esc cancel",
-        Screen::Library(_) => {
-            "↑↓ select · i info · e edit · a add · d delete · c columns · ^W sync all · Esc back"
+    fn screen_help_sections(&self) -> Vec<help::Section> {
+        match &self.screen {
+            Screen::Welcome(state) => welcome::help_sections(state),
+            Screen::Catalogs(state) => catalogs::help_sections(state),
+            Screen::NewCatalog(state) => new_catalog::help_sections(state),
+            Screen::Library(state) => library::help_sections(state),
         }
     }
 }
@@ -278,6 +306,14 @@ pub fn is_exit_key(key: &KeyEvent) -> bool {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => true,
         _ => false,
     }
+}
+
+fn is_ctrl_c(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn is_help_key(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('?'))
 }
 
 #[cfg(test)]
@@ -404,5 +440,90 @@ mod tests {
         app.dispatch(Event::Key(key(KeyCode::Enter))).unwrap();
         assert!(app.palette.is_none());
         assert!(matches!(app.screen, Screen::Catalogs(_)));
+    }
+
+    fn fresh_app() -> App {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        fs::create_dir_all(&cfg).unwrap();
+        // Leak the tempdir so the cfg path stays valid for the App's lifetime in
+        // the test. Tests are short-lived; the OS reclaims on process exit.
+        let _ = Box::leak(Box::new(dir));
+        App::new(cfg).unwrap()
+    }
+
+    #[test]
+    fn question_mark_opens_help_on_welcome() {
+        let mut app = fresh_app();
+        app.dispatch(Event::Key(key(KeyCode::Char('?')))).unwrap();
+        assert!(app.help.is_some());
+    }
+
+    #[test]
+    fn question_mark_in_wizard_text_field_does_not_open_help() {
+        let mut app = fresh_app();
+        app.screen = Screen::NewCatalog(new_catalog::State::new(new_catalog::Origin::Welcome));
+        app.dispatch(Event::Key(key(KeyCode::Char('?')))).unwrap();
+        assert!(app.help.is_none());
+        match &app.screen {
+            Screen::NewCatalog(s) => assert_eq!(s.name.value(), "?"),
+            _ => panic!("expected wizard"),
+        }
+    }
+
+    #[test]
+    fn help_open_swallows_unrelated_keys() {
+        let mut app = fresh_app();
+        app.help = Some(help::State);
+        // Pressing `e` should NOT trigger any screen action while help is open.
+        app.dispatch(Event::Key(key(KeyCode::Char('e')))).unwrap();
+        assert!(app.help.is_some(), "help must stay open on unrelated key");
+        assert!(matches!(app.screen, Screen::Welcome(_)));
+    }
+
+    #[test]
+    fn help_open_q_closes_help_without_quitting() {
+        let mut app = fresh_app();
+        app.help = Some(help::State);
+        app.dispatch(Event::Key(key(KeyCode::Char('q')))).unwrap();
+        assert!(app.help.is_none());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn help_open_esc_closes_help() {
+        let mut app = fresh_app();
+        app.help = Some(help::State);
+        app.dispatch(Event::Key(key(KeyCode::Esc))).unwrap();
+        assert!(app.help.is_none());
+    }
+
+    #[test]
+    fn help_open_ctrl_c_quits() {
+        let mut app = fresh_app();
+        app.help = Some(help::State);
+        app.dispatch(Event::Key(ctrl(KeyCode::Char('c')))).unwrap();
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn help_open_colon_does_not_open_palette() {
+        let mut app = fresh_app();
+        app.help = Some(help::State);
+        app.dispatch(Event::Key(key(KeyCode::Char(':')))).unwrap();
+        assert!(app.palette.is_none());
+        assert!(app.help.is_some());
+    }
+
+    #[test]
+    fn palette_help_command_opens_help_overlay() {
+        let mut app = fresh_app();
+        app.dispatch(Event::Key(key(KeyCode::Char(':')))).unwrap();
+        for ch in "help".chars() {
+            app.dispatch(Event::Key(key(KeyCode::Char(ch)))).unwrap();
+        }
+        app.dispatch(Event::Key(key(KeyCode::Enter))).unwrap();
+        assert!(app.palette.is_none());
+        assert!(app.help.is_some());
     }
 }

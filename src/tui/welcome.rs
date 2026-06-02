@@ -5,7 +5,26 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::tui::help::{Binding, Section as HelpSection};
 use crate::welcome;
+
+const WELCOME_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "↑↓ / j k",
+        desc: "navigate sections",
+    },
+    Binding {
+        keys: "Enter",
+        desc: "open selected section",
+    },
+];
+
+pub fn help_sections(_state: &State) -> Vec<HelpSection> {
+    vec![HelpSection {
+        title: "Welcome",
+        bindings: WELCOME_BINDINGS,
+    }]
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {

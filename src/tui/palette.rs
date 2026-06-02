@@ -7,7 +7,7 @@ use ratatui::Frame;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
-pub const COMMANDS: &[&str] = &[":library", ":catalogs", ":quit", ":q"];
+pub const COMMANDS: &[&str] = &[":library", ":catalogs", ":help", ":h", ":quit", ":q"];
 
 #[derive(Debug)]
 pub struct State {
@@ -34,6 +34,7 @@ impl State {
 pub enum Command {
     Library,
     Catalogs,
+    Help,
     Quit,
 }
 
@@ -79,6 +80,7 @@ pub fn parse(input: &str) -> Option<Command> {
     match input {
         ":library" => Some(Command::Library),
         ":catalogs" => Some(Command::Catalogs),
+        ":help" | ":h" => Some(Command::Help),
         ":quit" | ":q" => Some(Command::Quit),
         _ => None,
     }
@@ -204,6 +206,22 @@ mod tests {
         type_text(&mut s, "catalogs");
         let action = handle_key(&mut s, key(KeyCode::Enter));
         assert!(matches!(action, PaletteAction::Execute(Command::Catalogs)));
+    }
+
+    #[test]
+    fn enter_help_returns_help_command() {
+        let mut s = State::new();
+        type_text(&mut s, "help");
+        let action = handle_key(&mut s, key(KeyCode::Enter));
+        assert!(matches!(action, PaletteAction::Execute(Command::Help)));
+    }
+
+    #[test]
+    fn enter_h_returns_help_command() {
+        let mut s = State::new();
+        type_text(&mut s, "h");
+        let action = handle_key(&mut s, key(KeyCode::Enter));
+        assert!(matches!(action, PaletteAction::Execute(Command::Help)));
     }
 
     #[test]

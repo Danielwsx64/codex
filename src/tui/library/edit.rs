@@ -325,8 +325,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // hint
-            Constraint::Length(1), // spacer
             Constraint::Length(1), // title
             Constraint::Length(1), // author
             Constraint::Length(1), // tags
@@ -348,12 +346,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         ])
         .split(inner);
 
-    let hint = Paragraph::new(Line::from(Span::styled(
-        "Tab/↑↓ move · Enter on Save commits · Esc cancel",
-        Style::default().fg(Color::DarkGray),
-    )));
-    frame.render_widget(hint, layout[0]);
-
     let mut cursor_pos: Option<(u16, u16)> = None;
     let mut place_input =
         |frame: &mut Frame<'_>, area: Rect, label: &str, input: &Input, focused: bool| {
@@ -365,21 +357,21 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
 
     place_input(
         frame,
-        layout[2],
+        layout[0],
         "Title",
         &state.title,
         state.focus == Focus::Title,
     );
     place_input(
         frame,
-        layout[3],
+        layout[1],
         "Author",
         &state.author,
         state.focus == Focus::Author,
     );
     place_input(
         frame,
-        layout[4],
+        layout[2],
         "Tags",
         &state.tags,
         state.focus == Focus::Tags,
@@ -387,44 +379,44 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
 
     place_input(
         frame,
-        layout[6],
+        layout[4],
         "Series",
         &state.series_name,
         state.focus == Focus::SeriesName,
     );
     place_input(
         frame,
-        layout[7],
+        layout[5],
         "Index",
         &state.series_index,
         state.focus == Focus::SeriesIndex,
     );
-    render_rating_row(frame, layout[8], state.rating, state.focus == Focus::Rating);
+    render_rating_row(frame, layout[6], state.rating, state.focus == Focus::Rating);
 
     place_input(
         frame,
-        layout[10],
+        layout[8],
         "Publisher",
         &state.publisher,
         state.focus == Focus::Publisher,
     );
     place_input(
         frame,
-        layout[11],
+        layout[9],
         "Language",
         &state.language,
         state.focus == Focus::Language,
     );
     place_input(
         frame,
-        layout[12],
+        layout[10],
         "Published",
         &state.published_date,
         state.focus == Focus::PublishedDate,
     );
     place_input(
         frame,
-        layout[13],
+        layout[11],
         "ISBN",
         &state.isbn,
         state.focus == Focus::Isbn,
@@ -432,10 +424,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
 
     // Description: label row + body block.
     let desc_focused = state.focus == Focus::Description;
-    render_field_row(frame, layout[15], "Description", "", desc_focused);
-    render_description_body(frame, layout[16], &state.description, desc_focused);
+    render_field_row(frame, layout[13], "Description", "", desc_focused);
+    render_description_body(frame, layout[14], &state.description, desc_focused);
     if desc_focused {
-        cursor_pos = Some(description_cursor(layout[16], &state.description));
+        cursor_pos = Some(description_cursor(layout[14], &state.description));
     }
 
     // Buttons row.
@@ -448,7 +440,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
             Constraint::Length(12),
             Constraint::Min(0),
         ])
-        .split(layout[18]);
+        .split(layout[16]);
     render_button(frame, buttons[1], "[ Save ]", state.focus == Focus::Save);
     render_button(
         frame,
@@ -465,7 +457,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
         ]));
-        frame.render_widget(p, layout[19]);
+        frame.render_widget(p, layout[17]);
     }
 
     if let Some((cx, cy)) = cursor_pos {

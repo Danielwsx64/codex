@@ -17,7 +17,194 @@ use crate::catalog::{self};
 use crate::config::Registry;
 use crate::embed::{self, EmbedOutcome};
 use crate::import;
+use crate::tui::help::{Binding, Section};
 use crate::tui::widgets::{centered_rect, render_modal, StatusMessage};
+
+const TABLE_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "↑↓ / j k",
+        desc: "move selection",
+    },
+    Binding {
+        keys: "i",
+        desc: "inspect book",
+    },
+    Binding {
+        keys: "e",
+        desc: "edit metadata",
+    },
+    Binding {
+        keys: "a",
+        desc: "add files (file tree)",
+    },
+    Binding {
+        keys: "d / Delete",
+        desc: "remove book",
+    },
+    Binding {
+        keys: "c",
+        desc: "configure columns",
+    },
+    Binding {
+        keys: "Ctrl+W",
+        desc: "embed metadata into all files",
+    },
+];
+
+const INSPECT_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "e",
+        desc: "edit metadata",
+    },
+    Binding {
+        keys: "w",
+        desc: "embed into file",
+    },
+    Binding {
+        keys: "Esc / Enter / i",
+        desc: "close",
+    },
+];
+
+const CONFIRM_RM_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "y / Enter",
+        desc: "delete book and file",
+    },
+    Binding {
+        keys: "k",
+        desc: "delete row, keep file in cwd",
+    },
+    Binding {
+        keys: "n / Esc",
+        desc: "cancel",
+    },
+];
+
+const ADD_TREE_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "↑↓ / j k",
+        desc: "move cursor",
+    },
+    Binding {
+        keys: "Space",
+        desc: "toggle selection",
+    },
+    Binding {
+        keys: "Enter",
+        desc: "open dir / import file(s)",
+    },
+    Binding {
+        keys: "Backspace",
+        desc: "go to parent directory",
+    },
+];
+
+const EDIT_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "Tab / ↓",
+        desc: "next field",
+    },
+    Binding {
+        keys: "Shift+Tab / ↑",
+        desc: "previous field",
+    },
+    Binding {
+        keys: "Enter (on Save)",
+        desc: "commit changes",
+    },
+    Binding {
+        keys: "Enter (on Cancel)",
+        desc: "discard changes",
+    },
+];
+
+const EDIT_RATING_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "←→ / h l",
+        desc: "adjust rating by 1",
+    },
+    Binding {
+        keys: "0-5",
+        desc: "set rating directly",
+    },
+    Binding {
+        keys: "Backspace",
+        desc: "decrement rating",
+    },
+    Binding {
+        keys: "Tab / ↓",
+        desc: "next field",
+    },
+];
+
+const EMBED_JOB_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "Esc",
+        desc: "cancel job / close summary",
+    },
+    Binding {
+        keys: "Enter",
+        desc: "close summary (when done)",
+    },
+];
+
+const COLUMNS_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "↑↓ / j k",
+        desc: "move cursor",
+    },
+    Binding {
+        keys: "Space",
+        desc: "toggle column",
+    },
+    Binding {
+        keys: "Enter",
+        desc: "save",
+    },
+];
+
+pub fn help_sections(state: &State) -> Vec<Section> {
+    match state.overlay.as_ref() {
+        None => vec![Section {
+            title: "Library",
+            bindings: TABLE_BINDINGS,
+        }],
+        Some(Overlay::Inspect { .. }) => vec![Section {
+            title: "Inspect",
+            bindings: INSPECT_BINDINGS,
+        }],
+        Some(Overlay::ConfirmRm { .. }) => vec![Section {
+            title: "Confirm remove",
+            bindings: CONFIRM_RM_BINDINGS,
+        }],
+        Some(Overlay::AddTree(_)) => vec![Section {
+            title: "Add files",
+            bindings: ADD_TREE_BINDINGS,
+        }],
+        Some(Overlay::Edit(edit_state)) => {
+            let mut sections = vec![Section {
+                title: "Edit metadata",
+                bindings: EDIT_BINDINGS,
+            }];
+            if edit_state.focus == edit::Focus::Rating {
+                sections.push(Section {
+                    title: "Rating field",
+                    bindings: EDIT_RATING_BINDINGS,
+                });
+            }
+            sections
+        }
+        Some(Overlay::EmbedJob(_)) => vec![Section {
+            title: "Embed metadata",
+            bindings: EMBED_JOB_BINDINGS,
+        }],
+        Some(Overlay::Columns(_)) => vec![Section {
+            title: "Columns",
+            bindings: COLUMNS_BINDINGS,
+        }],
+    }
+}
 
 pub mod columns;
 pub mod edit;
@@ -672,23 +859,17 @@ fn read_tree(dir: &Path) -> std::result::Result<Vec<TreeEntry>, String> {
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(0)])
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(area);
 
     let title = match &state.catalog {
         Some(ctx) => format!("Library — {}", ctx.name),
         None => "Library".to_string(),
     };
-    let header = Paragraph::new(vec![
-        Line::from(Span::styled(
-            title,
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            "↑↓ select · i info · a add · d delete · Esc back",
-            Style::default().fg(Color::DarkGray),
-        )),
-    ]);
+    let header = Paragraph::new(Line::from(Span::styled(
+        title,
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
     frame.render_widget(header, layout[0]);
 
     if let Some(err) = &state.load_error {
@@ -820,13 +1001,9 @@ fn render_inspect_modal(frame: &mut Frame<'_>, area: Rect, book: &Book, absolute
     let title_w = " inspect ".len() + 4;
     let target_w = max_w.max(title_w).clamp(40, area.width as usize) as u16;
 
-    // Count rows: header(1) + identity + spacer(1) + catalog + spacer + metadata
-    // (if any) + description(2-4) + spacer + hint(1) + borders(2).
-    let mut rows: u16 = 1 // hint
-        + 1 // spacer
-        + identity.len() as u16
-        + 1
-        + catalog.len() as u16;
+    // Count rows: identity + spacer + catalog + spacer + metadata
+    // (if any) + description(2-4) + borders(2).
+    let mut rows: u16 = identity.len() as u16 + 1 + catalog.len() as u16;
     if !metadata.is_empty() {
         rows += 1 + metadata.len() as u16;
     }
@@ -890,9 +1067,6 @@ fn render_inspect_modal(frame: &mut Frame<'_>, area: Rect, book: &Book, absolute
         constraints.push(Constraint::Length(desc_lines.saturating_sub(1)));
         row_kind.push(RowKind::DescBody(desc.clone()));
     }
-    add_spacer(&mut constraints, &mut row_kind);
-    constraints.push(Constraint::Length(1));
-    row_kind.push(RowKind::Hint);
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -904,16 +1078,6 @@ fn render_inspect_modal(frame: &mut Frame<'_>, area: Rect, book: &Book, absolute
             RowKind::Blank => {}
             RowKind::Kv { key, value } => render_inspect_row(frame, layout[i], key, value),
             RowKind::DescBody(text) => render_inspect_desc(frame, layout[i], text),
-            RowKind::Hint => {
-                let p = Paragraph::new(Line::from(vec![
-                    Span::raw(" ".repeat(INSPECT_LEFT_PAD)),
-                    Span::styled(
-                        "e edit · w embed · Esc back",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]));
-                frame.render_widget(p, layout[i]);
-            }
         }
     }
 }
@@ -925,7 +1089,6 @@ enum RowKind {
     Blank,
     Kv { key: String, value: String },
     DescBody(String),
-    Hint,
 }
 
 fn render_inspect_row(frame: &mut Frame<'_>, area: Rect, key: &str, value: &str) {
@@ -1011,7 +1174,6 @@ fn render_tree_modal(frame: &mut Frame<'_>, area: Rect, tree: &AddTreeState) {
             Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(1),
-            Constraint::Length(1),
         ])
         .split(inner);
 
@@ -1068,12 +1230,6 @@ fn render_tree_modal(frame: &mut Frame<'_>, area: Rect, tree: &AddTreeState) {
         )));
         frame.render_widget(p, layout[2]);
     }
-
-    let hint = Paragraph::new(Line::from(Span::styled(
-        "↑↓ move · Space toggle · Enter open/import · Backspace up · Esc cancel",
-        Style::default().fg(Color::DarkGray),
-    )));
-    frame.render_widget(hint, layout[3]);
 }
 
 #[cfg(test)]
@@ -1621,6 +1777,40 @@ mod tests {
             _ => panic!(),
         }
         assert!(!has_pending_embed_job(&state));
+    }
+
+    #[test]
+    fn help_sections_match_overlay_state() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book_with_file(&cat, "Book", "Author");
+        let mut state = State::load(&reg);
+
+        assert_eq!(help_sections(&state)[0].title, "Library");
+
+        handle_key(&mut state, key(KeyCode::Char('i')));
+        assert_eq!(help_sections(&state)[0].title, "Inspect");
+
+        handle_key(&mut state, key(KeyCode::Esc));
+        handle_key(&mut state, key(KeyCode::Char('d')));
+        assert_eq!(help_sections(&state)[0].title, "Confirm remove");
+
+        handle_key(&mut state, key(KeyCode::Char('n')));
+        handle_key(&mut state, key(KeyCode::Char('c')));
+        assert_eq!(help_sections(&state)[0].title, "Columns");
+
+        handle_key(&mut state, key(KeyCode::Esc));
+        handle_key(&mut state, key(KeyCode::Char('e')));
+        let sections = help_sections(&state);
+        assert_eq!(sections[0].title, "Edit metadata");
+        assert_eq!(sections.len(), 1, "Rating field section only when focused");
+
+        // Land focus on Rating: Title→Author→Tags→Series→Index→Rating = 5 tabs.
+        for _ in 0..5 {
+            handle_key(&mut state, key(KeyCode::Tab));
+        }
+        let sections = help_sections(&state);
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[1].title, "Rating field");
     }
 
     #[test]
