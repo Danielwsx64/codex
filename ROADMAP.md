@@ -141,7 +141,8 @@ Ciclo de embed: qualquer edit (`cdx edit` ou TUI `e`) marca o livro como
 
 ## v0.3 — Busca e filtros
 
-- [ ] `cdx search <query>` — full-text em título/autor/tags
+- [x] `cdx search <query>` — substring case-insensitive em título/autor/tags
+      (whitespace = AND tokens; reusa o renderer do `ls` pra humano e JSONL)
 - [ ] Flags `--author`, `--tag`, `--series`, `--rating`
 - [ ] Saída `--json` pra compor com `jq`/scripts
 - [ ] TUI: registrar `:search` no command palette + ativar link

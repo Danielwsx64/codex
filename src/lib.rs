@@ -50,6 +50,12 @@ pub fn run() -> Result<()> {
             cli.catalog.as_deref(),
             cli.json,
         ),
+        Some(Command::Search { query }) => cli::books::dispatch_search(
+            query,
+            cli.data_dir.as_deref(),
+            cli.catalog.as_deref(),
+            cli.json,
+        ),
         Some(Command::Edit { target }) => {
             cli::edit::dispatch(target, cli.data_dir.as_deref(), cli.catalog.as_deref())
         }

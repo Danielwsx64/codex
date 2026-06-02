@@ -381,6 +381,73 @@ pub fn handle_ls(conn: &Connection) -> Result<Vec<Book>> {
     Ok(books)
 }
 
+pub fn handle_search(conn: &Connection, query: &str) -> Result<Vec<Book>> {
+    let tokens: Vec<String> = query
+        .split_whitespace()
+        .map(escape_like)
+        .map(|t| format!("%{t}%"))
+        .collect();
+    if tokens.is_empty() {
+        return Err(Error::Validation {
+            field: "query",
+            reason: "must not be empty".to_string(),
+        });
+    }
+
+    // Each token gets its own positional placeholder reused across the three
+    // OR branches (title / author / any tag name). Joining the per-token
+    // clauses with AND gives whitespace-token semantics: every token must
+    // match somewhere on a row for it to come back.
+    let where_clause = (1..=tokens.len())
+        .map(|n| {
+            format!(
+                "(b.title LIKE ?{n} ESCAPE '\\' COLLATE NOCASE \
+                  OR b.author LIKE ?{n} ESCAPE '\\' COLLATE NOCASE \
+                  OR EXISTS ( \
+                    SELECT 1 FROM book_tags bt \
+                    JOIN tags t ON t.id = bt.tag_id \
+                    WHERE bt.book_id = b.id \
+                      AND t.name LIKE ?{n} ESCAPE '\\' COLLATE NOCASE \
+                  ))"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let sql = format!(
+        "SELECT id, title, author, format, file_path, added_at,
+                description, series_name, series_index, rating,
+                isbn, publisher, language, published_date,
+                embed_status, embed_synced_at
+         FROM books b
+         WHERE {where_clause}
+         ORDER BY LOWER(title), id"
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows: rusqlite::Result<Vec<Book>> = stmt
+        .query_map(
+            rusqlite::params_from_iter(tokens.iter().map(String::as_str)),
+            row_to_book,
+        )?
+        .collect();
+    let mut books = rows?;
+    for b in &mut books {
+        b.tags = tags::fetch_for_book(conn, b.id)?;
+    }
+    Ok(books)
+}
+
+fn escape_like(token: &str) -> String {
+    let mut out = String::with_capacity(token.len() + 4);
+    for ch in token.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 pub fn fetch_pending(conn: &Connection) -> Result<Vec<Book>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, author, format, file_path, added_at,
@@ -1496,6 +1563,118 @@ mod tests {
         ));
 
         assert_eq!(handle_ls(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn handle_search_rejects_empty_query() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let err = handle_search(&conn, "   ").unwrap_err();
+        assert!(matches!(err, Error::Validation { field: "query", .. }));
+    }
+
+    #[test]
+    fn handle_search_matches_title_author_and_tag() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let by_title = insert_book(&conn, "Rust in Action", Some("Tim McNamara"));
+        let by_author = insert_book(&conn, "Programming Erlang", Some("Joe Armstrong"));
+        let by_tag = insert_book(&conn, "Foundation", Some("Isaac Asimov"));
+        let _unrelated = insert_book(&conn, "Pride and Prejudice", Some("Jane Austen"));
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        handle_tag_add(&mut conn, &by_tag.to_string(), &["rust-pattern".into()]).unwrap();
+
+        let rows = handle_search(&conn, "rust").unwrap();
+        let ids: Vec<i64> = rows.iter().map(|b| b.id).collect();
+        // Three matches: title contains "rust", tag is "rust-pattern", and
+        // "Programming Erlang" by Joe Armstrong does NOT match — only books
+        // whose title/author/tag contains the token survive.
+        assert!(ids.contains(&by_title), "title match must be included");
+        assert!(ids.contains(&by_tag), "tag match must be included");
+        assert!(
+            !ids.contains(&by_author),
+            "non-matching row must be excluded"
+        );
+
+        // Author match (substring) works too.
+        let rows = handle_search(&conn, "Armstrong").unwrap();
+        let ids: Vec<i64> = rows.iter().map(|b| b.id).collect();
+        assert_eq!(ids, vec![by_author]);
+    }
+
+    #[test]
+    fn handle_search_multi_token_is_and() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let target = insert_book(&conn, "Rust in Action", Some("Tim McNamara"));
+        let _only_first = insert_book(&conn, "Rust by Example", Some("Various"));
+        let _only_second = insert_book(&conn, "Action Plan", Some("Someone"));
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        // Token 1 only in title, token 2 only as a tag — the AND across fields
+        // (not columns) still keeps the row.
+        handle_tag_add(&mut conn, &target.to_string(), &["tim-special".into()]).unwrap();
+
+        let rows = handle_search(&conn, "rust tim-special").unwrap();
+        let ids: Vec<i64> = rows.iter().map(|b| b.id).collect();
+        assert_eq!(ids, vec![target]);
+    }
+
+    #[test]
+    fn handle_search_is_case_insensitive() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "Hello WORLD", Some("Someone"));
+        let rows = handle_search(&conn, "hello world").unwrap();
+        assert_eq!(rows.iter().map(|b| b.id).collect::<Vec<_>>(), vec![id]);
+    }
+
+    #[test]
+    fn handle_search_escapes_like_wildcards() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let literal = insert_book(&conn, "100% Pure", None);
+        let _decoy = insert_book(&conn, "Hundred Pct Pure", None);
+        // `%` must be matched literally, not as the SQL wildcard.
+        let rows = handle_search(&conn, "100%").unwrap();
+        assert_eq!(rows.iter().map(|b| b.id).collect::<Vec<_>>(), vec![literal]);
+
+        let underscore = insert_book(&conn, "snake_case explained", None);
+        let _decoy2 = insert_book(&conn, "snakeXcase explained", None);
+        let rows = handle_search(&conn, "snake_case").unwrap();
+        assert_eq!(
+            rows.iter().map(|b| b.id).collect::<Vec<_>>(),
+            vec![underscore]
+        );
+    }
+
+    #[test]
+    fn handle_search_populates_tags_column() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "Foundation", Some("Asimov"));
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        handle_tag_add(
+            &mut conn,
+            &id.to_string(),
+            &["sci-fi".into(), "classic".into()],
+        )
+        .unwrap();
+
+        let rows = handle_search(&conn, "foundation").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tags, vec!["classic", "sci-fi"]);
     }
 
     #[test]

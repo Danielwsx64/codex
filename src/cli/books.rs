@@ -120,6 +120,31 @@ pub fn dispatch_inspect(
     Ok(())
 }
 
+pub fn dispatch_search(
+    query: String,
+    data_dir: Option<&Path>,
+    catalog_override: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let registry = load(data_dir)?;
+    let entry = resolve_entry(&registry, catalog_override)?.clone();
+    let conn = catalog::open_existing(&entry.path)
+        .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
+    let rows = books::handle_search(&conn, &query)
+        .with_context(|| format!("while searching for `{query}`"))?;
+
+    let selection = resolve_columns(None, false, json)?;
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    if json {
+        render::render_book_ls_jsonl(&rows, &selection, &mut out)?;
+    } else {
+        render::render_book_ls_human(&rows, &selection, &mut out)?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
 pub fn dispatch_rm(
     target: String,
     keep: bool,

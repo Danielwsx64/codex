@@ -95,6 +95,16 @@ pub enum Command {
         )]
         target: String,
     },
+    #[command(
+        about = "Search books by substring across title, author and tags (whitespace = AND tokens)"
+    )]
+    Search {
+        #[arg(
+            value_name = "QUERY",
+            help = "Search query; multiple whitespace-separated tokens must all match"
+        )]
+        query: String,
+    },
     #[command(about = "Add tags to a book")]
     Tag {
         #[arg(
