@@ -13,6 +13,7 @@ use crate::tui::help;
 use crate::tui::library;
 use crate::tui::new_catalog;
 use crate::tui::palette;
+use crate::tui::too_small;
 use crate::tui::welcome;
 use crate::tui::widgets::{outer_block, render_default_footer, render_status, StatusMessage};
 
@@ -31,6 +32,7 @@ pub struct App {
     pub help: Option<help::State>,
     pub status: Option<StatusMessage>,
     pub should_quit: bool,
+    pub terminal_too_small: bool,
 }
 
 impl App {
@@ -50,6 +52,7 @@ impl App {
             help: None,
             status: None,
             should_quit: false,
+            terminal_too_small: false,
         })
     }
 
@@ -87,6 +90,13 @@ impl App {
         };
         // Ignore key release/repeat to avoid double-firing on terminals that emit them.
         if key.kind != crossterm::event::KeyEventKind::Press {
+            return Ok(());
+        }
+
+        if self.terminal_too_small {
+            if is_exit_key(&key) {
+                self.should_quit = true;
+            }
             return Ok(());
         }
 
@@ -259,6 +269,11 @@ impl App {
 
     pub fn render(&mut self, frame: &mut Frame<'_>) {
         let area = frame.area();
+        self.terminal_too_small = too_small::is_too_small(area);
+        if self.terminal_too_small {
+            too_small::render(frame, area);
+            return;
+        }
         let block = outer_block("codex");
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -513,6 +528,33 @@ mod tests {
         app.dispatch(Event::Key(key(KeyCode::Char(':')))).unwrap();
         assert!(app.palette.is_none());
         assert!(app.help.is_some());
+    }
+
+    #[test]
+    fn too_small_blocks_non_exit_keys() {
+        let mut app = fresh_app();
+        app.terminal_too_small = true;
+        // `?` would normally open help; while too-small it must be swallowed.
+        app.dispatch(Event::Key(key(KeyCode::Char('?')))).unwrap();
+        assert!(app.help.is_none());
+        assert!(!app.should_quit);
+        // `:` would normally open palette; same swallowing.
+        app.dispatch(Event::Key(key(KeyCode::Char(':')))).unwrap();
+        assert!(app.palette.is_none());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn too_small_allows_quit_keys() {
+        let mut app = fresh_app();
+        app.terminal_too_small = true;
+        app.dispatch(Event::Key(key(KeyCode::Char('q')))).unwrap();
+        assert!(app.should_quit);
+
+        let mut app = fresh_app();
+        app.terminal_too_small = true;
+        app.dispatch(Event::Key(ctrl(KeyCode::Char('c')))).unwrap();
+        assert!(app.should_quit);
     }
 
     #[test]

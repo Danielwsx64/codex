@@ -15,6 +15,7 @@ pub mod help;
 pub mod library;
 pub mod new_catalog;
 pub mod palette;
+pub mod too_small;
 pub mod welcome;
 pub mod widgets;
 
