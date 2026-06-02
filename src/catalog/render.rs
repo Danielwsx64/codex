@@ -5,7 +5,8 @@ use serde::Serialize;
 use tabwriter::TabWriter;
 
 use crate::catalog::books::{
-    AddOutcome as BookAddOutcome, AddStatus, Book, RmOutcome as BookRmOutcome, TagOpOutcome,
+    AddOutcome as BookAddOutcome, AddStatus, Book, RateOutcome, RmOutcome as BookRmOutcome,
+    SeriesOutcome, TagOpOutcome,
 };
 use crate::catalog::columns::LibraryColumn;
 use crate::catalog::handlers::{AddOutcome, CatalogRow, InitOutcome, RmOutcome, UseOutcome};
@@ -520,6 +521,115 @@ pub fn render_untag_jsonl<W: Write>(op: &TagOpOutcome, w: &mut W) -> io::Result<
         title: &op.book.title,
         removed: &op.changed,
         not_present: &op.unchanged,
+    };
+    serde_json::to_writer(&mut *w, &value)?;
+    writeln!(w)
+}
+
+#[derive(Serialize)]
+struct RateJson<'a> {
+    action: &'a str,
+    id: i64,
+    title: &'a str,
+    rating: Option<u8>,
+    previous_rating: Option<u8>,
+    changed: bool,
+    embed_status: &'a str,
+}
+
+#[derive(Serialize)]
+struct SeriesJson<'a> {
+    action: &'a str,
+    id: i64,
+    title: &'a str,
+    series_name: Option<&'a str>,
+    series_index: Option<f64>,
+    previous_series_name: Option<&'a str>,
+    previous_series_index: Option<f64>,
+    changed: bool,
+    embed_status: &'a str,
+}
+
+fn stars(rating: Option<u8>) -> String {
+    match rating {
+        None => "unrated".to_string(),
+        Some(r) => {
+            let filled = r.min(5) as usize;
+            let mut s = String::with_capacity(5);
+            for _ in 0..filled {
+                s.push('★');
+            }
+            for _ in filled..5 {
+                s.push('☆');
+            }
+            s
+        }
+    }
+}
+
+pub fn render_rate_human<W: Write>(op: &RateOutcome, w: &mut W) -> io::Result<()> {
+    let id = op.book.id;
+    let title = &op.book.title;
+    let now = stars(op.book.rating);
+    let was = stars(op.previous_rating);
+    if !op.changed {
+        writeln!(w, "Book {id} ({title}): rating unchanged ({now})")?;
+        return Ok(());
+    }
+    match op.book.rating {
+        None => writeln!(w, "Cleared rating for book {id} ({title}) (was {was})"),
+        Some(_) => writeln!(w, "Rated book {id} ({title}): {now} (was {was})"),
+    }
+}
+
+pub fn render_rate_jsonl<W: Write>(op: &RateOutcome, w: &mut W) -> io::Result<()> {
+    let value = RateJson {
+        action: "rate",
+        id: op.book.id,
+        title: &op.book.title,
+        rating: op.book.rating,
+        previous_rating: op.previous_rating,
+        changed: op.changed,
+        embed_status: op.book.embed_status.as_str(),
+    };
+    serde_json::to_writer(&mut *w, &value)?;
+    writeln!(w)
+}
+
+fn series_label(name: Option<&str>, index: Option<f64>) -> String {
+    match (name, index) {
+        (None, _) => "none".to_string(),
+        (Some(n), None) => n.to_string(),
+        (Some(n), Some(i)) => format!("{n} #{i}"),
+    }
+}
+
+pub fn render_series_human<W: Write>(op: &SeriesOutcome, w: &mut W) -> io::Result<()> {
+    let id = op.book.id;
+    let title = &op.book.title;
+    let now = series_label(op.book.series_name.as_deref(), op.book.series_index);
+    let was = series_label(op.previous_name.as_deref(), op.previous_index);
+    if !op.changed {
+        writeln!(w, "Book {id} ({title}): series unchanged ({now})")?;
+        return Ok(());
+    }
+    match op.book.series_name {
+        None => writeln!(w, "Cleared series for book {id} ({title}) (was: {was})"),
+        Some(_) => writeln!(w, "Set series for book {id} ({title}): {now} (was: {was})"),
+    }
+}
+
+pub fn render_series_jsonl<W: Write>(op: &SeriesOutcome, w: &mut W) -> io::Result<()> {
+    let value = SeriesJson {
+        action: "series",
+        id: op.book.id,
+        title: &op.book.title,
+        series_name: op.book.series_name.as_deref(),
+        series_index: op.book.series_index,
+        previous_series_name: op.previous_name.as_deref(),
+        previous_series_index: op.previous_index,
+        changed: op.changed,
+        embed_status: op.book.embed_status.as_str(),
     };
     serde_json::to_writer(&mut *w, &value)?;
     writeln!(w)

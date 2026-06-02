@@ -207,6 +207,56 @@ pub fn dispatch_untag(
     Ok(())
 }
 
+pub fn dispatch_rate(
+    target: String,
+    rating: u8,
+    data_dir: Option<&Path>,
+    catalog_override: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let registry = load(data_dir)?;
+    let entry = resolve_entry(&registry, catalog_override)?.clone();
+    let mut conn = catalog::open_existing(&entry.path)
+        .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
+    let outcome = books::handle_rate(&mut conn, &target, rating)
+        .with_context(|| format!("while rating `{target}`"))?;
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    if json {
+        render::render_rate_jsonl(&outcome, &mut out)?;
+    } else {
+        render::render_rate_human(&outcome, &mut out)?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
+pub fn dispatch_series(
+    target: String,
+    name: Option<String>,
+    index: Option<f64>,
+    clear: bool,
+    data_dir: Option<&Path>,
+    catalog_override: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let registry = load(data_dir)?;
+    let entry = resolve_entry(&registry, catalog_override)?.clone();
+    let mut conn = catalog::open_existing(&entry.path)
+        .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
+    let outcome = books::handle_series(&mut conn, &target, name.as_deref(), index, clear)
+        .with_context(|| format!("while setting series for `{target}`"))?;
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    if json {
+        render::render_series_jsonl(&outcome, &mut out)?;
+    } else {
+        render::render_series_human(&outcome, &mut out)?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
 pub(crate) fn load(data_dir: Option<&Path>) -> Result<Registry> {
     let config_dir =
         resolve_config_dir(data_dir).context("failed to resolve the cdx config directory")?;

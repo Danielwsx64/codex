@@ -105,6 +105,44 @@ pub enum Command {
         )]
         tags: Vec<String>,
     },
+    #[command(about = "Set or clear a book's rating (0 clears)")]
+    Rate {
+        #[arg(
+            value_name = "ID_OR_TITLE",
+            help = "Numeric id, or exact title (case-insensitive)"
+        )]
+        target: String,
+        #[arg(
+            value_name = "RATING",
+            value_parser = clap::value_parser!(u8).range(0..=5),
+            help = "Star rating from 0 (clears) to 5"
+        )]
+        rating: u8,
+    },
+    #[command(about = "Set or clear a book's series")]
+    Series {
+        #[arg(
+            value_name = "ID_OR_TITLE",
+            help = "Numeric id, or exact title (case-insensitive)"
+        )]
+        target: String,
+        #[arg(
+            value_name = "NAME",
+            required_unless_present = "clear",
+            conflicts_with = "clear",
+            help = "Series name to assign"
+        )]
+        name: Option<String>,
+        #[arg(
+            long,
+            value_name = "N",
+            conflicts_with = "clear",
+            help = "Position in the series (decimal); omitted preserves the current index"
+        )]
+        index: Option<f64>,
+        #[arg(long, help = "Remove the series (and its index) from the book")]
+        clear: bool,
+    },
     #[command(about = "Remove tags from a book")]
     Untag {
         #[arg(

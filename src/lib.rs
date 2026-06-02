@@ -58,6 +58,27 @@ pub fn run() -> Result<()> {
             cli.catalog.as_deref(),
             cli.json,
         ),
+        Some(Command::Rate { target, rating }) => cli::books::dispatch_rate(
+            target,
+            rating,
+            cli.data_dir.as_deref(),
+            cli.catalog.as_deref(),
+            cli.json,
+        ),
+        Some(Command::Series {
+            target,
+            name,
+            index,
+            clear,
+        }) => cli::books::dispatch_series(
+            target,
+            name,
+            index,
+            clear,
+            cli.data_dir.as_deref(),
+            cli.catalog.as_deref(),
+            cli.json,
+        ),
         Some(Command::Untag { target, tags, all }) => cli::books::dispatch_untag(
             target,
             tags,

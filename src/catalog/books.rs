@@ -154,6 +154,21 @@ pub struct TagOpOutcome {
     pub unchanged: Vec<String>,
 }
 
+#[derive(Debug)]
+pub struct RateOutcome {
+    pub book: Book,
+    pub previous_rating: Option<u8>,
+    pub changed: bool,
+}
+
+#[derive(Debug)]
+pub struct SeriesOutcome {
+    pub book: Book,
+    pub previous_name: Option<String>,
+    pub previous_index: Option<f64>,
+    pub changed: bool,
+}
+
 pub fn handle_add(conn: &mut Connection, catalog_dir: &Path, paths: &[PathBuf]) -> AddOutcome {
     let mut rows = Vec::with_capacity(paths.len());
     for src in paths {
@@ -452,6 +467,93 @@ pub fn handle_tag_clear(conn: &mut Connection, target: &str) -> Result<TagOpOutc
         book,
         changed: removed,
         unchanged: Vec::new(),
+    })
+}
+
+pub fn handle_rate(conn: &mut Connection, target: &str, rating: u8) -> Result<RateOutcome> {
+    if rating > 5 {
+        return Err(Error::Validation {
+            field: "rating",
+            reason: format!("must be between 0 and 5 (got {rating})"),
+        });
+    }
+    let id = resolve_target(conn, target)?;
+    let current = fetch_by_id(conn, id)?;
+    let previous_rating = current.rating;
+    let new_rating = if rating == 0 { None } else { Some(rating) };
+    let changed = new_rating != previous_rating;
+    if changed {
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE books SET rating = ?1 WHERE id = ?2",
+            params![new_rating.map(|r| r as i64), id],
+        )?;
+        mark_pending(&tx, id)?;
+        tx.commit()?;
+    }
+    let book = fetch_by_id(conn, id)?;
+    Ok(RateOutcome {
+        book,
+        previous_rating,
+        changed,
+    })
+}
+
+pub fn handle_series(
+    conn: &mut Connection,
+    target: &str,
+    name: Option<&str>,
+    index: Option<f64>,
+    clear: bool,
+) -> Result<SeriesOutcome> {
+    if let Some(n) = index {
+        if !n.is_finite() {
+            return Err(Error::Validation {
+                field: "series_index",
+                reason: "must be a finite number".to_string(),
+            });
+        }
+    }
+    let id = resolve_target(conn, target)?;
+    let current = fetch_by_id(conn, id)?;
+    let previous_name = current.series_name.clone();
+    let previous_index = current.series_index;
+
+    let (new_name, new_index) = if clear {
+        (None, None)
+    } else {
+        let trimmed = name
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        if trimmed.is_none() {
+            return Err(Error::Validation {
+                field: "series_name",
+                reason: "must not be empty (use --clear to remove the series)".to_string(),
+            });
+        }
+        // When updating without an explicit --index, preserve the prior index
+        // (matches the TUI modal behavior where blank input keeps the value).
+        let idx = index.or(previous_index);
+        (trimmed, idx)
+    };
+
+    let changed = new_name != previous_name || new_index != previous_index;
+    if changed {
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE books SET series_name = ?1, series_index = ?2 WHERE id = ?3",
+            params![new_name, new_index, id],
+        )?;
+        mark_pending(&tx, id)?;
+        tx.commit()?;
+    }
+    let book = fetch_by_id(conn, id)?;
+    Ok(SeriesOutcome {
+        book,
+        previous_name,
+        previous_index,
+        changed,
     })
 }
 
@@ -1054,6 +1156,194 @@ mod tests {
         let out = handle_tag_add(&mut conn, "sapiens", &["history".into()]).unwrap();
         assert_eq!(out.book.id, id);
         assert_eq!(out.book.tags, vec!["history"]);
+    }
+
+    #[test]
+    fn handle_rate_sets_value_and_marks_pending() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "B", None);
+        mark_embed_synced(&conn, id).unwrap();
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        let out = handle_rate(&mut conn, &id.to_string(), 4).unwrap();
+        assert!(out.changed);
+        assert_eq!(out.previous_rating, None);
+        assert_eq!(out.book.rating, Some(4));
+        assert_eq!(out.book.embed_status, EmbedStatus::Pending);
+    }
+
+    #[test]
+    fn handle_rate_zero_clears_existing_rating() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "B", None);
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        handle_rate(&mut conn, &id.to_string(), 3).unwrap();
+        mark_embed_synced(&conn, id).unwrap();
+
+        let out = handle_rate(&mut conn, &id.to_string(), 0).unwrap();
+        assert!(out.changed);
+        assert_eq!(out.previous_rating, Some(3));
+        assert_eq!(out.book.rating, None);
+        assert_eq!(out.book.embed_status, EmbedStatus::Pending);
+    }
+
+    #[test]
+    fn handle_rate_noop_preserves_embed_status() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "B", None);
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        handle_rate(&mut conn, &id.to_string(), 4).unwrap();
+        mark_embed_synced(&conn, id).unwrap();
+
+        let out = handle_rate(&mut conn, &id.to_string(), 4).unwrap();
+        assert!(!out.changed);
+        assert_eq!(out.book.embed_status, EmbedStatus::Synced);
+    }
+
+    #[test]
+    fn handle_series_sets_name_and_index_and_marks_pending() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "B", None);
+        mark_embed_synced(&conn, id).unwrap();
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        let out = handle_series(
+            &mut conn,
+            &id.to_string(),
+            Some("Foundation"),
+            Some(2.0),
+            false,
+        )
+        .unwrap();
+        assert!(out.changed);
+        assert_eq!(out.previous_name, None);
+        assert_eq!(out.previous_index, None);
+        assert_eq!(out.book.series_name.as_deref(), Some("Foundation"));
+        assert_eq!(out.book.series_index, Some(2.0));
+        assert_eq!(out.book.embed_status, EmbedStatus::Pending);
+    }
+
+    #[test]
+    fn handle_series_preserves_index_when_only_name_changes() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "B", None);
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        handle_series(
+            &mut conn,
+            &id.to_string(),
+            Some("Foundation"),
+            Some(2.0),
+            false,
+        )
+        .unwrap();
+        mark_embed_synced(&conn, id).unwrap();
+
+        let out = handle_series(
+            &mut conn,
+            &id.to_string(),
+            Some("Second Foundation"),
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(out.changed);
+        assert_eq!(out.book.series_name.as_deref(), Some("Second Foundation"));
+        assert_eq!(out.book.series_index, Some(2.0));
+        assert_eq!(out.book.embed_status, EmbedStatus::Pending);
+    }
+
+    #[test]
+    fn handle_series_clear_removes_both_columns() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "B", None);
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        handle_series(
+            &mut conn,
+            &id.to_string(),
+            Some("Foundation"),
+            Some(2.0),
+            false,
+        )
+        .unwrap();
+        mark_embed_synced(&conn, id).unwrap();
+
+        let out = handle_series(&mut conn, &id.to_string(), None, None, true).unwrap();
+        assert!(out.changed);
+        assert_eq!(out.book.series_name, None);
+        assert_eq!(out.book.series_index, None);
+        assert_eq!(out.book.embed_status, EmbedStatus::Pending);
+    }
+
+    #[test]
+    fn handle_series_noop_preserves_embed_status() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "B", None);
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        handle_series(
+            &mut conn,
+            &id.to_string(),
+            Some("Foundation"),
+            Some(2.0),
+            false,
+        )
+        .unwrap();
+        mark_embed_synced(&conn, id).unwrap();
+
+        let out = handle_series(
+            &mut conn,
+            &id.to_string(),
+            Some("Foundation"),
+            Some(2.0),
+            false,
+        )
+        .unwrap();
+        assert!(!out.changed);
+        assert_eq!(out.book.embed_status, EmbedStatus::Synced);
+    }
+
+    #[test]
+    fn handle_series_rejects_empty_name() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let id = insert_book(&conn, "B", None);
+        drop(conn);
+
+        let mut conn = catalog::open_existing(&cat).unwrap();
+        let err = handle_series(&mut conn, &id.to_string(), Some("   "), None, false).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Validation {
+                field: "series_name",
+                ..
+            }
+        ));
     }
 
     #[test]
