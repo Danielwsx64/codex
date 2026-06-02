@@ -7,7 +7,15 @@ use ratatui::Frame;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
-pub const COMMANDS: &[&str] = &[":library", ":catalogs", ":help", ":h", ":quit", ":q"];
+pub const COMMANDS: &[&str] = &[
+    ":library",
+    ":catalogs",
+    ":search",
+    ":help",
+    ":h",
+    ":quit",
+    ":q",
+];
 
 #[derive(Debug)]
 pub struct State {
@@ -34,6 +42,7 @@ impl State {
 pub enum Command {
     Library,
     Catalogs,
+    Search,
     Help,
     Quit,
 }
@@ -80,6 +89,7 @@ pub fn parse(input: &str) -> Option<Command> {
     match input {
         ":library" => Some(Command::Library),
         ":catalogs" => Some(Command::Catalogs),
+        ":search" => Some(Command::Search),
         ":help" | ":h" => Some(Command::Help),
         ":quit" | ":q" => Some(Command::Quit),
         _ => None,
@@ -198,6 +208,22 @@ mod tests {
         type_text(&mut s, "q");
         let action = handle_key(&mut s, key(KeyCode::Enter));
         assert!(matches!(action, PaletteAction::Execute(Command::Quit)));
+    }
+
+    #[test]
+    fn enter_search_returns_search_command() {
+        let mut s = State::new();
+        type_text(&mut s, "search");
+        let action = handle_key(&mut s, key(KeyCode::Enter));
+        assert!(matches!(action, PaletteAction::Execute(Command::Search)));
+    }
+
+    #[test]
+    fn tab_completes_s_to_search() {
+        let mut s = State::new();
+        type_text(&mut s, "s");
+        handle_key(&mut s, key(KeyCode::Tab));
+        assert_eq!(s.input.value(), ":search");
     }
 
     #[test]

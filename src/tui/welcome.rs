@@ -53,8 +53,7 @@ impl Section {
 
     pub fn milestone(self) -> Option<&'static str> {
         match self {
-            Section::Library | Section::Catalogs => None,
-            Section::Search => Some("v0.3"),
+            Section::Library | Section::Catalogs | Section::Search => None,
             Section::Devices => Some("v0.4"),
         }
     }
@@ -221,8 +220,9 @@ mod tests {
         handle_key(&mut s, key(KeyCode::Down));
         assert_eq!(s.selected(), Section::Catalogs);
         handle_key(&mut s, key(KeyCode::Down));
-        // Search is disabled, must skip to next enabled. With Search+Devices disabled,
-        // the next enabled wrapping forward is Library.
+        assert_eq!(s.selected(), Section::Search);
+        handle_key(&mut s, key(KeyCode::Down));
+        // Devices is disabled (v0.4), so wrapping forward lands back on Library.
         assert_eq!(s.selected(), Section::Library);
     }
 
@@ -230,7 +230,8 @@ mod tests {
     fn up_wraps_to_last_enabled() {
         let mut s = State::new();
         handle_key(&mut s, key(KeyCode::Up));
-        assert_eq!(s.selected(), Section::Catalogs);
+        // Devices is disabled, so the last enabled wrapping backward is Search.
+        assert_eq!(s.selected(), Section::Search);
     }
 
     #[test]
@@ -238,6 +239,21 @@ mod tests {
         let mut s = State::new();
         let action = handle_key(&mut s, key(KeyCode::Enter));
         assert!(matches!(action, WelcomeAction::Enter(Section::Library)));
+    }
+
+    #[test]
+    fn search_section_is_enabled() {
+        assert!(Section::Search.enabled());
+        assert!(!Section::Devices.enabled());
+    }
+
+    #[test]
+    fn enter_on_search_returns_navigate() {
+        let mut s = State::new();
+        handle_key(&mut s, key(KeyCode::Down)); // Catalogs
+        handle_key(&mut s, key(KeyCode::Down)); // Search
+        let action = handle_key(&mut s, key(KeyCode::Enter));
+        assert!(matches!(action, WelcomeAction::Enter(Section::Search)));
     }
 
     #[test]

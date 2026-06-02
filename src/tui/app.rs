@@ -167,8 +167,25 @@ impl App {
             palette::Command::Catalogs => {
                 self.screen = Screen::Catalogs(catalogs::State::from_registry(&self.registry));
             }
+            palette::Command::Search => {
+                self.open_search();
+            }
             palette::Command::Help => {
                 self.help = Some(help::State);
+            }
+        }
+    }
+
+    // Search lives on the Library screen as "filter mode". `:search` (and the
+    // welcome link) open the advanced filter wizard there, preserving any
+    // active filter when we're already on Library so it can be edited.
+    fn open_search(&mut self) {
+        match &mut self.screen {
+            Screen::Library(s) => library::open_search_wizard(s),
+            _ => {
+                let mut s = library::State::load(&self.registry);
+                library::open_search_wizard(&mut s);
+                self.screen = Screen::Library(s);
             }
         }
     }
@@ -207,6 +224,9 @@ impl App {
             }
             welcome::WelcomeAction::Enter(welcome::Section::Catalogs) => {
                 self.screen = Screen::Catalogs(catalogs::State::from_registry(&self.registry));
+            }
+            welcome::WelcomeAction::Enter(welcome::Section::Search) => {
+                self.open_search();
             }
             welcome::WelcomeAction::Enter(_) => {}
         }
@@ -555,6 +575,68 @@ mod tests {
         app.terminal_too_small = true;
         app.dispatch(Event::Key(ctrl(KeyCode::Char('c')))).unwrap();
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn palette_search_from_welcome_opens_library_with_wizard() {
+        let mut app = fresh_app();
+        app.dispatch(Event::Key(key(KeyCode::Char(':')))).unwrap();
+        for ch in "search".chars() {
+            app.dispatch(Event::Key(key(KeyCode::Char(ch)))).unwrap();
+        }
+        app.dispatch(Event::Key(key(KeyCode::Enter))).unwrap();
+        assert!(app.palette.is_none());
+        match &app.screen {
+            Screen::Library(s) => {
+                assert!(matches!(s.overlay, Some(library::Overlay::Search(_))));
+            }
+            _ => panic!("expected Library screen"),
+        }
+    }
+
+    #[test]
+    fn welcome_search_link_opens_library_with_wizard() {
+        let mut app = fresh_app();
+        // Welcome menu: Library -> Catalogs -> Search.
+        app.dispatch(Event::Key(key(KeyCode::Down))).unwrap();
+        app.dispatch(Event::Key(key(KeyCode::Down))).unwrap();
+        app.dispatch(Event::Key(key(KeyCode::Enter))).unwrap();
+        match &app.screen {
+            Screen::Library(s) => {
+                assert!(matches!(s.overlay, Some(library::Overlay::Search(_))));
+            }
+            _ => panic!("expected Library screen"),
+        }
+    }
+
+    #[test]
+    fn palette_search_from_library_preserves_filter() {
+        let mut app = fresh_app();
+        app.screen = Screen::Library(library::State::load(&app.registry));
+        if let Screen::Library(s) = &mut app.screen {
+            s.filter = Some(library::ActiveFilter {
+                criteria: library::FilterCriteria {
+                    query: Some("dune".to_string()),
+                    ..library::FilterCriteria::default()
+                },
+                kind: library::FilterKind::Quick,
+            });
+        }
+        app.dispatch(Event::Key(key(KeyCode::Char(':')))).unwrap();
+        for ch in "search".chars() {
+            app.dispatch(Event::Key(key(KeyCode::Char(ch)))).unwrap();
+        }
+        app.dispatch(Event::Key(key(KeyCode::Enter))).unwrap();
+        match &app.screen {
+            Screen::Library(s) => {
+                match &s.overlay {
+                    Some(library::Overlay::Search(w)) => assert_eq!(w.query.value(), "dune"),
+                    _ => panic!("expected search overlay"),
+                }
+                assert!(s.filter.is_some(), "existing filter must survive :search");
+            }
+            _ => panic!("expected Library screen"),
+        }
     }
 
     #[test]

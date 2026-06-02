@@ -9,6 +9,8 @@ use ratatui::widgets::{
     Block, Borders, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
 };
 use ratatui::Frame;
+use tui_input::backend::crossterm::EventHandler;
+use tui_input::Input;
 
 use crate::catalog::books::{self, Book, EmbedStatus};
 use crate::catalog::columns::LibraryColumn;
@@ -49,6 +51,44 @@ const TABLE_BINDINGS: &[Binding] = &[
     Binding {
         keys: "Ctrl+W",
         desc: "embed metadata into all files",
+    },
+    Binding {
+        keys: "/",
+        desc: "quick filter (Esc clears when filtered)",
+    },
+    Binding {
+        keys: ":search",
+        desc: "advanced filter wizard",
+    },
+];
+
+const FILTER_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "Enter",
+        desc: "apply filter (empty clears)",
+    },
+    Binding {
+        keys: "Esc",
+        desc: "cancel editing the query",
+    },
+];
+
+const SEARCH_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "Tab / ↓",
+        desc: "next field",
+    },
+    Binding {
+        keys: "Shift+Tab / ↑",
+        desc: "previous field",
+    },
+    Binding {
+        keys: "Enter (on Apply)",
+        desc: "apply filter",
+    },
+    Binding {
+        keys: "Esc",
+        desc: "cancel",
     },
 ];
 
@@ -219,6 +259,14 @@ pub fn help_sections(state: &State) -> Vec<Section> {
             title: "Columns",
             bindings: COLUMNS_BINDINGS,
         }],
+        Some(Overlay::Filter(_)) => vec![Section {
+            title: "Filter",
+            bindings: FILTER_BINDINGS,
+        }],
+        Some(Overlay::Search(_)) => vec![Section {
+            title: "Search",
+            bindings: SEARCH_BINDINGS,
+        }],
     }
 }
 
@@ -226,6 +274,7 @@ pub mod add_result;
 pub mod columns;
 pub mod edit;
 pub mod embed_job;
+pub mod search;
 
 #[derive(Debug)]
 pub struct State {
@@ -236,12 +285,54 @@ pub struct State {
     pub load_error: Option<String>,
     pub cwd: PathBuf,
     pub columns: Vec<LibraryColumn>,
+    pub filter: Option<ActiveFilter>,
 }
 
 #[derive(Debug, Clone)]
 pub struct CatalogContext {
     pub name: String,
     pub dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FilterCriteria {
+    pub query: Option<String>,
+    pub author: Option<String>,
+    pub tags: Vec<String>,
+    pub series: Option<String>,
+    pub rating: Option<books::RatingRange>,
+}
+
+impl FilterCriteria {
+    fn as_filters(&self) -> books::SearchFilters<'_> {
+        books::SearchFilters {
+            query: self.query.as_deref(),
+            author: self.author.as_deref(),
+            tags: &self.tags,
+            series: self.series.as_deref(),
+            rating: self.rating,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.query.is_none()
+            && self.author.is_none()
+            && self.tags.is_empty()
+            && self.series.is_none()
+            && self.rating.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterKind {
+    Quick,
+    Advanced,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveFilter {
+    pub criteria: FilterCriteria,
+    pub kind: FilterKind,
 }
 
 #[derive(Debug)]
@@ -259,6 +350,8 @@ pub enum Overlay {
     Edit(Box<edit::State>),
     EmbedJob(Box<Job>),
     Columns(columns::State),
+    Filter(Input),
+    Search(Box<search::State>),
 }
 
 #[derive(Debug)]
@@ -296,6 +389,7 @@ impl State {
             load_error: None,
             cwd,
             columns: LibraryColumn::DEFAULT.to_vec(),
+            filter: None,
         };
         if let Ok(entry) = registry.resolve(None) {
             state.catalog = Some(CatalogContext {
@@ -312,7 +406,11 @@ impl State {
         let Some(ctx) = self.catalog.clone() else {
             return;
         };
-        match list_rows(&ctx.dir) {
+        let result = match &self.filter {
+            Some(f) => search_rows(&ctx.dir, &f.criteria),
+            None => list_rows(&ctx.dir),
+        };
+        match result {
             Ok(rows) => {
                 self.rows = rows;
                 if self.cursor >= self.rows.len() {
@@ -369,10 +467,44 @@ pub fn handle_key(state: &mut State, key: KeyEvent) -> LibraryAction {
         }
         KeyCode::Char('a') => open_add_tree(state),
         KeyCode::Char('d') | KeyCode::Delete => open_confirm_rm(state),
-        KeyCode::Esc => LibraryAction::Back,
+        KeyCode::Char('/') => open_filter_input(state),
+        KeyCode::Esc => {
+            // In filtered mode, Esc drops the filter and returns to the full
+            // list; only an unfiltered Library hands control back to Welcome.
+            if state.filter.is_some() {
+                state.filter = None;
+                state.refresh();
+                LibraryAction::None
+            } else {
+                LibraryAction::Back
+            }
+        }
         KeyCode::Char(':') => LibraryAction::OpenPalette,
         _ => LibraryAction::None,
     }
+}
+
+fn open_filter_input(state: &mut State) -> LibraryAction {
+    if state.catalog.is_none() {
+        return LibraryAction::Status(StatusMessage::error("no catalog selected"));
+    }
+    // Re-opening `/` on a quick filter lets the user edit the current term.
+    // An advanced filter is abandoned: `/` starts a fresh quick query.
+    let prefill = match &state.filter {
+        Some(ActiveFilter {
+            criteria,
+            kind: FilterKind::Quick,
+        }) => criteria.query.clone().unwrap_or_default(),
+        _ => String::new(),
+    };
+    state.overlay = Some(Overlay::Filter(Input::default().with_value(prefill)));
+    LibraryAction::None
+}
+
+pub fn open_search_wizard(state: &mut State) {
+    state.overlay = Some(Overlay::Search(Box::new(search::State::from_filter(
+        state.filter.as_ref(),
+    ))));
 }
 
 fn handle_overlay_key(state: &mut State, key: KeyEvent) -> LibraryAction {
@@ -392,7 +524,66 @@ fn handle_overlay_key(state: &mut State, key: KeyEvent) -> LibraryAction {
         Some(Overlay::Edit(_)) => handle_edit_key(state, key),
         Some(Overlay::EmbedJob(_)) => handle_embed_job_key(state, key),
         Some(Overlay::Columns(_)) => handle_columns_key(state, key),
+        Some(Overlay::Filter(_)) => handle_filter_key(state, key),
+        Some(Overlay::Search(_)) => handle_search_key(state, key),
         None => LibraryAction::None,
+    }
+}
+
+fn handle_filter_key(state: &mut State, key: KeyEvent) -> LibraryAction {
+    let Some(Overlay::Filter(input)) = state.overlay.as_mut() else {
+        return LibraryAction::None;
+    };
+    match key.code {
+        // Esc abandons the edit, leaving any prior filter untouched.
+        KeyCode::Esc => {
+            state.overlay = None;
+            LibraryAction::None
+        }
+        KeyCode::Enter => {
+            let query = input.value().trim().to_string();
+            state.overlay = None;
+            if query.is_empty() {
+                // Committing an empty query clears the filter entirely.
+                state.filter = None;
+            } else {
+                state.filter = Some(ActiveFilter {
+                    criteria: FilterCriteria {
+                        query: Some(query),
+                        ..FilterCriteria::default()
+                    },
+                    kind: FilterKind::Quick,
+                });
+            }
+            state.refresh();
+            LibraryAction::None
+        }
+        _ => {
+            input.handle_event(&crossterm::event::Event::Key(key));
+            LibraryAction::None
+        }
+    }
+}
+
+fn handle_search_key(state: &mut State, key: KeyEvent) -> LibraryAction {
+    let Some(Overlay::Search(wizard)) = state.overlay.as_mut() else {
+        return LibraryAction::None;
+    };
+    match search::handle_key(wizard.as_mut(), key) {
+        search::SearchAction::None => LibraryAction::None,
+        search::SearchAction::Cancel => {
+            state.overlay = None;
+            LibraryAction::None
+        }
+        search::SearchAction::Apply(criteria) => {
+            state.overlay = None;
+            state.filter = Some(ActiveFilter {
+                criteria,
+                kind: FilterKind::Advanced,
+            });
+            state.refresh();
+            LibraryAction::None
+        }
     }
 }
 
@@ -571,6 +762,8 @@ fn embed_from_inspect(state: &mut State) -> LibraryAction {
 pub fn captures_text_input(state: &State) -> bool {
     match state.overlay.as_ref() {
         Some(Overlay::Edit(edit_state)) => edit::captures_text_input(edit_state),
+        Some(Overlay::Search(wizard)) => search::captures_text_input(wizard),
+        Some(Overlay::Filter(_)) => true,
         _ => false,
     }
 }
@@ -883,6 +1076,11 @@ fn list_rows(dir: &Path) -> std::result::Result<Vec<Book>, String> {
     books::handle_ls(&conn).map_err(|e| e.to_string())
 }
 
+fn search_rows(dir: &Path, criteria: &FilterCriteria) -> std::result::Result<Vec<Book>, String> {
+    let conn = catalog::open_existing(dir).map_err(|e| e.to_string())?;
+    books::handle_search(&conn, &criteria.as_filters()).map_err(|e| e.to_string())
+}
+
 fn remove_book(dir: &Path, id: i64, keep: bool) -> std::result::Result<books::RmOutcome, String> {
     let mut conn = catalog::open_existing(dir).map_err(|e| e.to_string())?;
     books::handle_rm(&mut conn, dir, &id.to_string(), keep).map_err(|e| e.to_string())
@@ -952,10 +1150,23 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         Some(ctx) => format!("Library — {}", ctx.name),
         None => "Library".to_string(),
     };
-    let header = Paragraph::new(Line::from(Span::styled(
+    let mut header_spans = vec![Span::styled(
         title,
         Style::default().add_modifier(Modifier::BOLD),
-    )));
+    )];
+    if let Some(filter) = &state.filter {
+        header_spans.push(Span::styled(
+            format!(
+                " · filtered ({}): {}",
+                state.rows.len(),
+                filter_summary(filter)
+            ),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    let header = Paragraph::new(Line::from(header_spans));
     frame.render_widget(header, layout[0]);
 
     if let Some(err) = &state.load_error {
@@ -973,8 +1184,13 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         .alignment(Alignment::Center);
         frame.render_widget(p, layout[1]);
     } else if state.rows.is_empty() {
+        let msg = if state.filter.is_some() {
+            "no matches for filter — Esc to clear"
+        } else {
+            "no books yet — press `a` to import one"
+        };
         let p = Paragraph::new(Line::from(Span::styled(
-            "no books yet — press `a` to import one",
+            msg,
             Style::default().fg(Color::DarkGray),
         )))
         .alignment(Alignment::Center);
@@ -994,8 +1210,67 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         Some(Overlay::Edit(edit_state)) => edit::render(frame, area, edit_state.as_ref()),
         Some(Overlay::EmbedJob(job)) => embed_job::render(frame, area, job),
         Some(Overlay::Columns(picker)) => columns::render(frame, area, picker),
+        Some(Overlay::Filter(input)) => render_filter_bar(frame, area, input),
+        Some(Overlay::Search(wizard)) => search::render(frame, area, wizard.as_ref()),
         None => {}
     }
+}
+
+fn filter_summary(filter: &ActiveFilter) -> String {
+    let c = &filter.criteria;
+    match filter.kind {
+        FilterKind::Quick => format!("/{}", c.query.as_deref().unwrap_or_default()),
+        FilterKind::Advanced => {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(q) = &c.query {
+                parts.push(q.clone());
+            }
+            if let Some(a) = &c.author {
+                parts.push(format!("author={a}"));
+            }
+            for t in &c.tags {
+                parts.push(format!("tag={t}"));
+            }
+            if let Some(s) = &c.series {
+                parts.push(format!("series={s}"));
+            }
+            if let Some(r) = &c.rating {
+                if r.min == r.max {
+                    parts.push(format!("rating={}", r.min));
+                } else {
+                    parts.push(format!("rating={}..{}", r.min, r.max));
+                }
+            }
+            parts.join(" ")
+        }
+    }
+}
+
+fn render_filter_bar(frame: &mut Frame<'_>, area: Rect, input: &Input) {
+    // A single-line vim-style input pinned to the bottom row of the Library
+    // pane, rather than a centered modal.
+    let bar = Rect {
+        x: area.x,
+        y: area.y + area.height.saturating_sub(1),
+        width: area.width,
+        height: 1,
+    };
+    frame.render_widget(Clear, bar);
+    let prefix = "/";
+    let p = Paragraph::new(Line::from(vec![
+        Span::styled(prefix, Style::default().fg(Color::Yellow)),
+        Span::styled(
+            input.value().to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    frame.render_widget(p, bar);
+    let cx = bar
+        .x
+        .saturating_add(prefix.len() as u16)
+        .saturating_add(input.visual_cursor() as u16)
+        .min(bar.x + bar.width.saturating_sub(1));
+    frame.set_cursor_position((cx, bar.y));
 }
 
 fn render_table(frame: &mut Frame<'_>, area: Rect, state: &State) {
@@ -1461,6 +1736,162 @@ mod tests {
         let mut state = State::load(&reg);
         let action = handle_key(&mut state, key(KeyCode::Char(':')));
         assert!(matches!(action, LibraryAction::OpenPalette));
+    }
+
+    fn type_chars(state: &mut State, text: &str) {
+        for ch in text.chars() {
+            handle_key(state, key(KeyCode::Char(ch)));
+        }
+    }
+
+    #[test]
+    fn slash_opens_filter_and_enter_applies_quick() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book(&cat, "Dune", Some("Herbert"));
+        insert_book(&cat, "Hyperion", Some("Simmons"));
+        let mut state = State::load(&reg);
+        assert_eq!(state.rows.len(), 2);
+
+        handle_key(&mut state, key(KeyCode::Char('/')));
+        assert!(matches!(state.overlay, Some(Overlay::Filter(_))));
+        type_chars(&mut state, "dune");
+        handle_key(&mut state, key(KeyCode::Enter));
+
+        assert!(state.overlay.is_none());
+        assert!(matches!(
+            state.filter,
+            Some(ActiveFilter {
+                kind: FilterKind::Quick,
+                ..
+            })
+        ));
+        assert_eq!(state.rows.len(), 1);
+        assert_eq!(state.rows[0].title, "Dune");
+    }
+
+    #[test]
+    fn esc_clears_filter_then_returns_back() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book(&cat, "Dune", None);
+        insert_book(&cat, "Hyperion", None);
+        let mut state = State::load(&reg);
+
+        handle_key(&mut state, key(KeyCode::Char('/')));
+        type_chars(&mut state, "dune");
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(state.rows.len(), 1);
+
+        // First Esc clears the filter and restores the full list.
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+        assert!(matches!(action, LibraryAction::None));
+        assert!(state.filter.is_none());
+        assert_eq!(state.rows.len(), 2);
+
+        // Second Esc (normal mode) hands back to Welcome.
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+        assert!(matches!(action, LibraryAction::Back));
+    }
+
+    #[test]
+    fn empty_query_on_enter_clears_filter() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book(&cat, "Dune", None);
+        let mut state = State::load(&reg);
+        handle_key(&mut state, key(KeyCode::Char('/')));
+        type_chars(&mut state, "dune");
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(state.filter.is_some());
+
+        // Re-open and commit an empty query.
+        handle_key(&mut state, key(KeyCode::Char('/')));
+        handle_key(&mut state, key(KeyCode::Backspace));
+        handle_key(&mut state, key(KeyCode::Backspace));
+        handle_key(&mut state, key(KeyCode::Backspace));
+        handle_key(&mut state, key(KeyCode::Backspace));
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(state.filter.is_none());
+    }
+
+    #[test]
+    fn slash_prefills_quick_term_but_not_advanced() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book(&cat, "Dune", None);
+        let mut state = State::load(&reg);
+
+        handle_key(&mut state, key(KeyCode::Char('/')));
+        type_chars(&mut state, "dune");
+        handle_key(&mut state, key(KeyCode::Enter));
+
+        handle_key(&mut state, key(KeyCode::Char('/')));
+        match &state.overlay {
+            Some(Overlay::Filter(input)) => assert_eq!(input.value(), "dune"),
+            _ => panic!("expected filter overlay"),
+        }
+        handle_key(&mut state, key(KeyCode::Esc));
+
+        // An advanced filter is abandoned: `/` starts fresh.
+        state.filter = Some(ActiveFilter {
+            criteria: FilterCriteria {
+                author: Some("Herbert".to_string()),
+                ..FilterCriteria::default()
+            },
+            kind: FilterKind::Advanced,
+        });
+        handle_key(&mut state, key(KeyCode::Char('/')));
+        match &state.overlay {
+            Some(Overlay::Filter(input)) => assert_eq!(input.value(), ""),
+            _ => panic!("expected filter overlay"),
+        }
+    }
+
+    #[test]
+    fn open_search_wizard_prefills_from_filter() {
+        let (_tmp, _cat, reg) = setup_with_catalog();
+        let mut state = State::load(&reg);
+        state.filter = Some(ActiveFilter {
+            criteria: FilterCriteria {
+                query: Some("dune".to_string()),
+                ..FilterCriteria::default()
+            },
+            kind: FilterKind::Quick,
+        });
+        open_search_wizard(&mut state);
+        match &state.overlay {
+            Some(Overlay::Search(w)) => {
+                assert_eq!(w.query.value(), "dune");
+                assert_eq!(w.author.value(), "");
+            }
+            _ => panic!("expected search overlay"),
+        }
+    }
+
+    #[test]
+    fn search_wizard_apply_filters_rows_advanced() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book(&cat, "Dune", Some("Herbert"));
+        insert_book(&cat, "Hyperion", Some("Simmons"));
+        let mut state = State::load(&reg);
+
+        open_search_wizard(&mut state);
+        if let Some(Overlay::Search(w)) = state.overlay.as_mut() {
+            w.focus = search::Focus::Author;
+        }
+        type_chars(&mut state, "Herbert");
+        if let Some(Overlay::Search(w)) = state.overlay.as_mut() {
+            w.focus = search::Focus::Apply;
+        }
+        handle_key(&mut state, key(KeyCode::Enter));
+
+        assert!(state.overlay.is_none());
+        assert!(matches!(
+            state.filter,
+            Some(ActiveFilter {
+                kind: FilterKind::Advanced,
+                ..
+            })
+        ));
+        assert_eq!(state.rows.len(), 1);
+        assert_eq!(state.rows[0].title, "Dune");
     }
 
     #[test]

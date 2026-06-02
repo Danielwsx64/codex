@@ -144,9 +144,11 @@ Ciclo de embed: qualquer edit (`cdx edit` ou TUI `e`) marca o livro como
 - [x] `cdx search <query>` — substring case-insensitive em título/autor/tags
       (whitespace = AND tokens; reusa o renderer do `ls` pra humano e JSONL)
 - [x] Flags `--author`, `--tag`, `--series`, `--rating`
-- [ ] Saída `--json` pra compor com `jq`/scripts
-- [ ] TUI: registrar `:search` no command palette + ativar link
-      "Search" na welcome
+- [x] Saída `--json` pra compor com `jq`/scripts
+- [x] TUI: registrar `:search` no command palette + ativar link
+      "Search" na welcome — vira o "modo filtrado" da tela Library:
+      `/` filtra por texto (tokens AND, como no CLI) e `:search` abre o
+      wizard com campos de texto/autor/tag/série/rating; Esc limpa o filtro
 
 ## v0.4 — Kindle sync (USB)
 
