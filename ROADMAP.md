@@ -246,6 +246,44 @@ PDF é layout-fixo, fundamentalmente hostil ao reflow do terminal.
       quebra a portabilidade "binário único" do cdx. `lopdf` (já dep)
       é só para metadados; para texto, `pdf-extract` é o caminho.
 
+## v0.9 — Anotações e marcações
+
+Highlights, notas e bookmarks como dado de primeira classe no
+catálogo: importados do Kindle e/ou criados no leitor da TUI. Retoma
+a seleção visual (`v`) e os bookmarks que a v0.8 deixou em defer.
+
+- [ ] Migration `0007_annotations.sql` — tabela `annotations`
+      (`book_id`, `kind` highlight|note|bookmark, `chapter`, `offset`,
+      `text` trecho marcado, `note` comentário opcional, `source`
+      kindle|cdx, `created_at`); índice por `book_id`.
+- [ ] `cdx import clippings <path>` — parseia o `My Clippings.txt`
+      (registros delimitados por `==========`: título/autor, tipo,
+      localização, timestamp, texto) e importa todas as anotações para
+      o DB, casando cada uma com o livro do catálogo por título/autor
+      (não-casadas viram aviso, não erro). `source = kindle`. `--json`
+      resume o que entrou. TUI: fluxo de import equivalente.
+- [ ] `cdx annotations ls <id|título>` — lista anotações de um livro
+      (humano + `--json`); flag `--source kindle|cdx` filtra a origem.
+- [ ] TUI leitor: criar marcação via seleção visual (`v` + movimento,
+      Enter confirma) e nota (input de comentário sobre o trecho
+      selecionado) — persiste com `source = cdx`.
+- [ ] TUI leitor: navegar anotações — lista/modal das marcações do
+      livro com salto pro trecho correspondente; teclas de pular entre
+      marcações documentadas no `?`.
+- [ ] TUI leitor: destacar visualmente a origem — marcações importadas
+      do Kindle e marcações criadas no codex usam estilos distintos
+      (via `src/reader/style.rs`).
+- [ ] Export de anotações em formato neutro (Markdown/JSON), agrupado
+      por livro e separando origem Kindle vs codex.
+
+Exploração (best-effort, pode escorregar pra backlog):
+
+- [ ] Tentar reexportar pro Kindle as anotações criadas só no codex,
+      reusando código opensource (plugins do Calibre, parsers de
+      sidecar `.sdr`/`.pds`/`.mbp`). Formato proprietário, amarrado a
+      ASIN/checksum do arquivo e instável entre firmwares — sem
+      garantia de round-trip. Documentar até onde dá pra ir.
+
 ## v1.0 — Estável
 
 - [ ] Man page (`cdx.1`)

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -47,6 +47,10 @@ const READER_BINDINGS: &[Binding] = &[
     Binding {
         keys: "gg / G",
         desc: "first / last page of book",
+    },
+    Binding {
+        keys: "H / L",
+        desc: "top / bottom of current page",
     },
     Binding {
         keys: "Space / Ctrl+f",
@@ -185,13 +189,14 @@ impl State {
 
     fn ensure_layout(&mut self, idx: usize, width: usize) {
         if self.layouts[idx].is_none() {
-            let text = self
+            let empty: Vec<crate::reader::style::StyledLine> = Vec::new();
+            let lines: &[crate::reader::style::StyledLine] = self
                 .book
                 .chapters
                 .get(idx)
-                .map(|c| c.text.as_str())
-                .unwrap_or("");
-            self.layouts[idx] = Some(lay_out(text, width));
+                .map(|c| c.lines.as_slice())
+                .unwrap_or(&empty);
+            self.layouts[idx] = Some(lay_out(lines, width));
         }
     }
 
@@ -210,15 +215,6 @@ impl State {
         layout.line_for_offset(self.cursor_offset)
     }
 
-    fn set_cursor_to_line_start(&mut self, line_idx: usize) {
-        self.ensure_layout(self.current_chapter, self.layout_width);
-        let layout = self.layouts[self.current_chapter]
-            .as_ref()
-            .expect("layout populated");
-        let clamped = line_idx.min(layout.line_count().saturating_sub(1));
-        self.cursor_offset = layout.line_offset(clamped);
-    }
-
     fn cursor_line_and_col(&mut self) -> (usize, usize) {
         self.ensure_layout(self.current_chapter, self.layout_width);
         let layout = self.layouts[self.current_chapter]
@@ -227,11 +223,7 @@ impl State {
         let line = layout.line_for_offset(self.cursor_offset);
         let line_start = layout.line_offset(line);
         let col = self.cursor_offset.saturating_sub(line_start);
-        let line_len = layout
-            .lines
-            .get(line)
-            .map(|l| l.chars().count())
-            .unwrap_or(0);
+        let line_len = layout.line_char_count(line);
         (line, col.min(line_len))
     }
 
@@ -338,6 +330,14 @@ pub fn handle_key(state: &mut State, key: KeyEvent) -> ReaderAction {
             go_to_last_page(state);
             ReaderAction::None
         }
+        KeyCode::Char('H') if !ctrl => {
+            move_to_page_edge(state, PageEdge::Top);
+            ReaderAction::None
+        }
+        KeyCode::Char('L') if !ctrl => {
+            move_to_page_edge(state, PageEdge::Bottom);
+            ReaderAction::None
+        }
         KeyCode::Char(' ') => {
             page_step(state, PageStep::Down);
             ReaderAction::None
@@ -427,6 +427,30 @@ enum LineEdge {
     End,
 }
 
+enum PageEdge {
+    Top,
+    Bottom,
+}
+
+fn move_to_page_edge(state: &mut State, edge: PageEdge) {
+    state.ensure_layout(state.current_chapter, state.layout_width);
+    let layout = state.layouts[state.current_chapter]
+        .as_ref()
+        .expect("layout populated");
+    let height = state.page_height;
+    let pages = page_ranges(layout.line_count(), height);
+    let cursor_line = layout.line_for_offset(state.cursor_offset);
+    let page_idx = page_index_for_line(cursor_line, height);
+    let Some(range) = pages.get(page_idx).copied() else {
+        return;
+    };
+    let target = match edge {
+        PageEdge::Top => range.start,
+        PageEdge::Bottom => range.end.saturating_sub(1).max(range.start),
+    };
+    state.cursor_offset = layout.line_offset(target);
+}
+
 fn move_to_line_edge(state: &mut State, edge: LineEdge) {
     let (line_idx, _col) = state.cursor_line_and_col();
     state.ensure_layout(state.current_chapter, state.layout_width);
@@ -434,11 +458,7 @@ fn move_to_line_edge(state: &mut State, edge: LineEdge) {
         .as_ref()
         .expect("layout populated");
     let line_start = layout.line_offset(line_idx);
-    let line_len = layout
-        .lines
-        .get(line_idx)
-        .map(|l| l.chars().count())
-        .unwrap_or(0);
+    let line_len = layout.line_char_count(line_idx);
     state.cursor_offset = match edge {
         LineEdge::Start => line_start,
         LineEdge::End => line_start + line_len.saturating_sub(1).max(0),
@@ -451,11 +471,7 @@ fn move_cursor_horizontal(state: &mut State, delta: i64) {
     let layout = state.layouts[state.current_chapter]
         .as_ref()
         .expect("layout populated");
-    let line_len = layout
-        .lines
-        .get(line_idx)
-        .map(|l| l.chars().count())
-        .unwrap_or(0);
+    let line_len = layout.line_char_count(line_idx);
     let new_col = (col as i64 + delta).clamp(0, line_len.saturating_sub(1).max(0) as i64) as usize;
     state.cursor_offset = layout.line_offset(line_idx) + new_col;
 }
@@ -468,11 +484,7 @@ fn move_cursor_vertical(state: &mut State, delta: i64) {
         .expect("layout populated");
     let last_line = layout.line_count().saturating_sub(1);
     let new_line = (line_idx as i64 + delta).clamp(0, last_line as i64) as usize;
-    let target_line_len = layout
-        .lines
-        .get(new_line)
-        .map(|l| l.chars().count())
-        .unwrap_or(0);
+    let target_line_len = layout.line_char_count(new_line);
     let new_col = col.min(target_line_len.saturating_sub(1).max(0));
     state.cursor_offset = layout.line_offset(new_line) + new_col;
 }
@@ -536,58 +548,83 @@ enum PageStep {
 }
 
 fn page_step(state: &mut State, step: PageStep) {
-    let height = state.page_height;
-    let half = (height / 2).max(1);
-    let delta_lines: i64 = match step {
-        PageStep::Down => height as i64,
-        PageStep::Up => -(height as i64),
-        PageStep::HalfDown => half as i64,
-        PageStep::HalfUp => -(half as i64),
-    };
-    move_by_lines(state, delta_lines);
+    let half = (state.page_height / 2).max(1) as i64;
+    match step {
+        PageStep::Down => move_to_next_page(state),
+        PageStep::Up => move_to_prev_page(state),
+        PageStep::HalfDown => scroll_within_chapter(state, half),
+        PageStep::HalfUp => scroll_within_chapter(state, -half),
+    }
     state.write_progress();
 }
 
-fn move_by_lines(state: &mut State, delta_lines: i64) {
-    let line_idx = state.current_line_index() as i64;
-    let target = line_idx + delta_lines;
-    if target < 0 {
-        // Cross into previous chapter from the bottom.
-        if state.current_chapter == 0 {
-            state.set_cursor_to_line_start(0);
-            return;
-        }
-        state.current_chapter -= 1;
-        state.ensure_layout(state.current_chapter, state.layout_width);
-        let layout = state.layouts[state.current_chapter]
-            .as_ref()
-            .expect("layout populated");
-        let last_line = layout.line_count().saturating_sub(1);
-        // Continue scrolling: remaining negative delta is `target` (still negative).
-        let remaining = target;
-        let new_line = (last_line as i64 + remaining + 1).max(0) as usize;
-        state.set_cursor_to_line_start(new_line);
-        return;
-    }
+/// Strict page navigation: jump to the first line of the next page in
+/// reading order. Within a chapter, that's the next page. On the chapter's
+/// last page, it crosses to the first page of the next chapter. At the very
+/// end of the book it stays put.
+fn move_to_next_page(state: &mut State) {
     state.ensure_layout(state.current_chapter, state.layout_width);
     let layout = state.layouts[state.current_chapter]
         .as_ref()
         .expect("layout populated");
-    let line_count = layout.line_count() as i64;
-    if target >= line_count {
-        // Cross into next chapter.
-        if state.current_chapter + 1 >= state.book.chapters.len() {
-            let last = line_count.saturating_sub(1).max(0) as usize;
-            state.set_cursor_to_line_start(last);
-            return;
-        }
-        let overflow = target - line_count;
-        state.current_chapter += 1;
-        state.ensure_layout(state.current_chapter, state.layout_width);
-        state.set_cursor_to_line_start(overflow.max(0) as usize);
+    let pages = page_ranges(layout.line_count(), state.page_height);
+    let cursor_line = layout.line_for_offset(state.cursor_offset);
+    let current_page = page_index_for_line(cursor_line, state.page_height);
+    if current_page + 1 < pages.len() {
+        let range = pages[current_page + 1];
+        let line = range.start.min(layout.line_count().saturating_sub(1));
+        state.cursor_offset = layout.line_offset(line);
         return;
     }
-    state.set_cursor_to_line_start(target as usize);
+    // Last page → roll over to the next chapter at its first line.
+    if state.current_chapter + 1 < state.book.chapters.len() {
+        state.current_chapter += 1;
+        state.cursor_offset = 0;
+    }
+}
+
+fn move_to_prev_page(state: &mut State) {
+    state.ensure_layout(state.current_chapter, state.layout_width);
+    let layout = state.layouts[state.current_chapter]
+        .as_ref()
+        .expect("layout populated");
+    let pages = page_ranges(layout.line_count(), state.page_height);
+    let cursor_line = layout.line_for_offset(state.cursor_offset);
+    let current_page = page_index_for_line(cursor_line, state.page_height);
+    if current_page > 0 {
+        let range = pages[current_page - 1];
+        let line = range.start.min(layout.line_count().saturating_sub(1));
+        state.cursor_offset = layout.line_offset(line);
+        return;
+    }
+    // First page → roll back to the previous chapter at its last page.
+    if state.current_chapter == 0 {
+        return;
+    }
+    state.current_chapter -= 1;
+    state.ensure_layout(state.current_chapter, state.layout_width);
+    let prev = state.layouts[state.current_chapter]
+        .as_ref()
+        .expect("layout populated");
+    let prev_pages = page_ranges(prev.line_count(), state.page_height);
+    if let Some(last) = prev_pages.last() {
+        let line = last.start.min(prev.line_count().saturating_sub(1));
+        state.cursor_offset = prev.line_offset(line);
+    }
+}
+
+/// Half-page (Ctrl+d / Ctrl+u) shifts by `delta` lines but never crosses
+/// the current chapter's boundary — same containment policy as the strict
+/// page commands above.
+fn scroll_within_chapter(state: &mut State, delta_lines: i64) {
+    state.ensure_layout(state.current_chapter, state.layout_width);
+    let layout = state.layouts[state.current_chapter]
+        .as_ref()
+        .expect("layout populated");
+    let line_idx = layout.line_for_offset(state.cursor_offset) as i64;
+    let last_line = layout.line_count().saturating_sub(1) as i64;
+    let target = (line_idx + delta_lines).clamp(0, last_line.max(0)) as usize;
+    state.cursor_offset = layout.line_offset(target);
 }
 
 fn change_chapter(state: &mut State, delta: i64) {
@@ -710,11 +747,14 @@ fn render_page(frame: &mut Frame<'_>, area: Rect, state: &mut State) {
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(range.len());
     for (row_in_page, line_idx) in (range.start..range.end).enumerate() {
-        let text = layout.lines.get(line_idx).cloned().unwrap_or_default();
+        let Some(styled) = layout.lines.get(line_idx).cloned() else {
+            lines.push(Line::from(""));
+            continue;
+        };
         if row_in_page == cursor_in_page_row {
-            lines.push(line_with_cursor(&text, cursor_col));
+            lines.push(styled_line_with_cursor(&styled, cursor_col));
         } else {
-            lines.push(Line::from(text));
+            lines.push(styled_line_to_ratatui(&styled));
         }
     }
     // Pad to fill viewport height with blank lines.
@@ -729,27 +769,104 @@ fn render_page(frame: &mut Frame<'_>, area: Rect, state: &mut State) {
     frame.render_widget(paragraph, area);
 }
 
-fn line_with_cursor(text: &str, cursor_col: usize) -> Line<'static> {
-    if text.is_empty() {
+fn style_for_span(style: &crate::reader::style::TextStyle) -> Style {
+    let mut out = Style::default();
+    let mut mods = Modifier::empty();
+    if style.bold {
+        mods |= Modifier::BOLD;
+    }
+    if style.italic {
+        mods |= Modifier::ITALIC;
+    }
+    if style.underline {
+        mods |= Modifier::UNDERLINED;
+    }
+    if style.strikethrough {
+        mods |= Modifier::CROSSED_OUT;
+    }
+    if let Some(level) = style.heading_level {
+        // Headings always render bold. Level 1/2 also get a colour accent so
+        // the eye lands on them quickly — terminals can't change font size,
+        // so colour + bold is the substitute.
+        mods |= Modifier::BOLD;
+        out = match level {
+            1 => out.fg(Color::Cyan),
+            2 => out.fg(Color::LightCyan),
+            3 => out.fg(Color::LightBlue),
+            _ => out,
+        };
+    }
+    if style.link {
+        out = out.fg(Color::Blue);
+    }
+    if style.code {
+        out = out.bg(Color::Rgb(40, 40, 40));
+    }
+    out.add_modifier(mods)
+}
+
+fn styled_line_to_ratatui(line: &crate::reader::style::StyledLine) -> Line<'static> {
+    if line.spans.is_empty() {
+        return Line::from("");
+    }
+    let spans: Vec<Span<'static>> = line
+        .spans
+        .iter()
+        .map(|s| Span::styled(s.text.clone(), style_for_span(&s.style)))
+        .collect();
+    Line::from(spans)
+}
+
+fn styled_line_with_cursor(
+    line: &crate::reader::style::StyledLine,
+    cursor_col: usize,
+) -> Line<'static> {
+    if line.is_empty() {
         return Line::from(Span::styled(
             " ".to_string(),
             Style::default().add_modifier(Modifier::REVERSED),
         ));
     }
-    let total = text.chars().count();
+    let total = line.char_count();
     let col = cursor_col.min(total.saturating_sub(1).max(0));
-    let before: String = text.chars().take(col).collect();
-    let cursor_ch: String = text
-        .chars()
-        .nth(col)
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| " ".to_string());
-    let after: String = text.chars().skip(col + 1).collect();
-    Line::from(vec![
-        Span::raw(before),
-        Span::styled(cursor_ch, Style::default().add_modifier(Modifier::REVERSED)),
-        Span::raw(after),
-    ])
+
+    let mut out_spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 2);
+    let mut consumed = 0usize;
+    for span in &line.spans {
+        let span_len = span.text.chars().count();
+        let span_start = consumed;
+        let span_end = consumed + span_len;
+        consumed = span_end;
+        if span_len == 0 {
+            continue;
+        }
+        let base = style_for_span(&span.style);
+        if col < span_start || col >= span_end {
+            out_spans.push(Span::styled(span.text.clone(), base));
+            continue;
+        }
+        // The cursor lands inside this span — split into [before][cursor][after].
+        let rel = col - span_start;
+        let before: String = span.text.chars().take(rel).collect();
+        let cursor_ch: String = span
+            .text
+            .chars()
+            .nth(rel)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| " ".to_string());
+        let after: String = span.text.chars().skip(rel + 1).collect();
+        if !before.is_empty() {
+            out_spans.push(Span::styled(before, base));
+        }
+        out_spans.push(Span::styled(
+            cursor_ch,
+            base.add_modifier(Modifier::REVERSED),
+        ));
+        if !after.is_empty() {
+            out_spans.push(Span::styled(after, base));
+        }
+    }
+    Line::from(out_spans)
 }
 
 fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &mut State) {
@@ -766,25 +883,39 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &mut State) {
     // on top — that keeps the contrast bar uniform end-to-end.
     let base = Style::default().bg(Color::DarkGray).fg(Color::White);
 
-    let mut spans: Vec<Span<'static>> = vec![
+    // Pin the page counter to the right edge and let the title/chapter/status
+    // flow on the left. We size the right rect to the exact width of the
+    // counter (plus one trailing space) so the two paragraphs don't overlap.
+    let right_text = format!("pág {abs_page}/{total_pages} ");
+    let right_width = u16::try_from(right_text.chars().count()).unwrap_or(0);
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(right_width)])
+        .split(area);
+
+    let mut left_spans: Vec<Span<'static>> = vec![
         Span::styled(format!(" {title}"), base.add_modifier(Modifier::BOLD)),
         Span::styled("  ·  ", base),
         Span::styled(format!("cap {current_chapter}/{chapters}"), base),
     ];
     if !chapter_title.is_empty() {
-        spans.push(Span::styled(
+        left_spans.push(Span::styled(
             format!(" — {chapter_title}"),
             base.fg(Color::Gray),
         ));
     }
-    spans.push(Span::styled("  ·  ", base));
-    spans.push(Span::styled(format!("pág {abs_page}/{total_pages}"), base));
     if let Some(message) = status {
-        spans.push(Span::styled("  ·  ", base));
-        spans.push(Span::styled(message, base.fg(Color::Yellow)));
+        left_spans.push(Span::styled("  ·  ", base));
+        left_spans.push(Span::styled(message, base.fg(Color::Yellow)));
     }
-    let paragraph = Paragraph::new(Line::from(spans)).style(base);
-    frame.render_widget(paragraph, area);
+    let left = Paragraph::new(Line::from(left_spans)).style(base);
+    frame.render_widget(left, chunks[0]);
+
+    let right = Paragraph::new(Line::from(Span::styled(right_text, base)))
+        .style(base)
+        .alignment(Alignment::Right);
+    frame.render_widget(right, chunks[1]);
 }
 
 #[cfg(test)]
@@ -816,20 +947,17 @@ mod tests {
 
     #[test]
     fn cursor_starts_at_offset_zero() {
-        let s = build_state(vec![Chapter {
-            title: "A".into(),
-            text: "alpha bravo charlie".into(),
-        }]);
+        let s = build_state(vec![Chapter::from_text(
+            "A".into(),
+            "alpha bravo charlie".into(),
+        )]);
         assert_eq!(s.cursor_offset, 0);
         assert_eq!(s.current_chapter, 0);
     }
 
     #[test]
     fn move_cursor_horizontal_clamps_to_line_end() {
-        let mut s = build_state(vec![Chapter {
-            title: "A".into(),
-            text: "abc def".into(),
-        }]);
+        let mut s = build_state(vec![Chapter::from_text("A".into(), "abc def".into())]);
         for _ in 0..100 {
             move_cursor_horizontal(&mut s, 1);
         }
@@ -841,10 +969,10 @@ mod tests {
 
     #[test]
     fn move_cursor_vertical_walks_lines() {
-        let mut s = build_state(vec![Chapter {
-            title: "A".into(),
-            text: "line one\nline two\nline three".into(),
-        }]);
+        let mut s = build_state(vec![Chapter::from_text(
+            "A".into(),
+            "line one\nline two\nline three".into(),
+        )]);
         move_cursor_vertical(&mut s, 1);
         let (line, _) = s.cursor_line_and_col();
         assert_eq!(line, 1);
@@ -859,10 +987,10 @@ mod tests {
 
     #[test]
     fn word_forward_jumps_to_next_word() {
-        let mut s = build_state(vec![Chapter {
-            title: "A".into(),
-            text: "alpha bravo charlie".into(),
-        }]);
+        let mut s = build_state(vec![Chapter::from_text(
+            "A".into(),
+            "alpha bravo charlie".into(),
+        )]);
         move_word(&mut s, WordMotion::Forward);
         assert_eq!(s.cursor_offset, 6); // start of "bravo"
         move_word(&mut s, WordMotion::Forward);
@@ -871,10 +999,10 @@ mod tests {
 
     #[test]
     fn word_back_jumps_to_previous_word() {
-        let mut s = build_state(vec![Chapter {
-            title: "A".into(),
-            text: "alpha bravo charlie".into(),
-        }]);
+        let mut s = build_state(vec![Chapter::from_text(
+            "A".into(),
+            "alpha bravo charlie".into(),
+        )]);
         s.cursor_offset = 12;
         move_word(&mut s, WordMotion::Backward);
         assert_eq!(s.cursor_offset, 6);
@@ -882,14 +1010,12 @@ mod tests {
 
     #[test]
     fn page_step_down_advances_by_page_height() {
-        let mut s = build_state(vec![Chapter {
-            title: "A".into(),
-            // 12 lines of text so we have multiple pages at height 5.
-            text: (0..12)
-                .map(|i| format!("line {i}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        }]);
+        // 12 lines of text so we have multiple pages at height 5.
+        let body = (0..12)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut s = build_state(vec![Chapter::from_text("A".into(), body)]);
         page_step(&mut s, PageStep::Down);
         let line = s.current_line_index();
         assert_eq!(line, 5);
@@ -901,14 +1027,8 @@ mod tests {
     #[test]
     fn go_to_chapter_clamps() {
         let mut s = build_state(vec![
-            Chapter {
-                title: "1".into(),
-                text: "a".into(),
-            },
-            Chapter {
-                title: "2".into(),
-                text: "b".into(),
-            },
+            Chapter::from_text("1".into(), "a".into()),
+            Chapter::from_text("2".into(), "b".into()),
         ]);
         go_to_chapter(&mut s, 2);
         assert_eq!(s.current_chapter, 1);
@@ -920,21 +1040,17 @@ mod tests {
 
     #[test]
     fn go_to_page_lands_on_correct_chapter() {
+        let body_a = (0..7)
+            .map(|i| format!("a{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body_b = (0..7)
+            .map(|i| format!("b{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let mut s = build_state(vec![
-            Chapter {
-                title: "1".into(),
-                text: (0..7)
-                    .map(|i| format!("a{i}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            },
-            Chapter {
-                title: "2".into(),
-                text: (0..7)
-                    .map(|i| format!("b{i}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            },
+            Chapter::from_text("1".into(), body_a),
+            Chapter::from_text("2".into(), body_b),
         ]);
         // chapter 1 has 7 lines / page=5 → 2 pages
         // chapter 2 has 7 lines / page=5 → 2 pages
@@ -947,10 +1063,10 @@ mod tests {
 
     #[test]
     fn pending_g_triggers_first_page_on_second_g() {
-        let mut s = build_state(vec![Chapter {
-            title: "1".into(),
-            text: "line0\nline1\nline2".into(),
-        }]);
+        let mut s = build_state(vec![Chapter::from_text(
+            "1".into(),
+            "line0\nline1\nline2".into(),
+        )]);
         s.cursor_offset = 10; // somewhere in line 1 or 2
         let event = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
         handle_key(&mut s, event);
@@ -964,10 +1080,10 @@ mod tests {
 
     #[test]
     fn pending_g_resets_on_other_key() {
-        let mut s = build_state(vec![Chapter {
-            title: "1".into(),
-            text: "line0\nline1\nline2".into(),
-        }]);
+        let mut s = build_state(vec![Chapter::from_text(
+            "1".into(),
+            "line0\nline1\nline2".into(),
+        )]);
         let event = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
         handle_key(&mut s, event);
         assert!(s.pending_g);
@@ -980,14 +1096,8 @@ mod tests {
     #[test]
     fn capital_g_goes_to_last_page() {
         let mut s = build_state(vec![
-            Chapter {
-                title: "1".into(),
-                text: "a\nb".into(),
-            },
-            Chapter {
-                title: "2".into(),
-                text: "c\nd\ne".into(),
-            },
+            Chapter::from_text("1".into(), "a\nb".into()),
+            Chapter::from_text("2".into(), "c\nd\ne".into()),
         ]);
         let event = KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE);
         handle_key(&mut s, event);
@@ -1046,18 +1156,9 @@ mod tests {
         // First two chapters are empty front-matter (cover, title page);
         // opening should land on the first non-empty one.
         let s = build_state(vec![
-            Chapter {
-                title: "Cover".into(),
-                text: "".into(),
-            },
-            Chapter {
-                title: "Title".into(),
-                text: "  \n  ".into(),
-            },
-            Chapter {
-                title: "Intro".into(),
-                text: "real content here".into(),
-            },
+            Chapter::from_text("Cover".into(), "".into()),
+            Chapter::from_text("Title".into(), "  \n  ".into()),
+            Chapter::from_text("Intro".into(), "real content here".into()),
         ]);
         assert_eq!(s.current_chapter, 2);
     }
@@ -1065,14 +1166,8 @@ mod tests {
     #[test]
     fn gg_skips_empty_leading_chapters() {
         let mut s = build_state(vec![
-            Chapter {
-                title: "Cover".into(),
-                text: "".into(),
-            },
-            Chapter {
-                title: "Intro".into(),
-                text: "real content here".into(),
-            },
+            Chapter::from_text("Cover".into(), "".into()),
+            Chapter::from_text("Intro".into(), "real content here".into()),
         ]);
         // Move forward so we have somewhere to come back from.
         s.current_chapter = 1;
@@ -1084,24 +1179,163 @@ mod tests {
 
     #[test]
     fn esc_returns_back_action() {
-        let mut s = build_state(vec![Chapter {
-            title: "1".into(),
-            text: "x".into(),
-        }]);
+        let mut s = build_state(vec![Chapter::from_text("1".into(), "x".into())]);
         let event = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         let action = handle_key(&mut s, event);
         assert!(matches!(action, ReaderAction::Back));
     }
 
     #[test]
+    fn page_step_down_advances_within_chapter_then_rolls_to_next() {
+        // page_height = 5 (set by build_state). Chapter 1 has 12 lines → 3
+        // pages (lines 0..5, 5..10, 10..12). Chapter 2 has 12 lines too.
+        let ch1 = (0..12)
+            .map(|i| format!("a{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let ch2 = (0..12)
+            .map(|i| format!("b{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut s = build_state(vec![
+            Chapter::from_text("1".into(), ch1),
+            Chapter::from_text("2".into(), ch2),
+        ]);
+        // Page 1 → 2 (still in chapter 1).
+        page_step(&mut s, PageStep::Down);
+        assert_eq!(s.current_chapter, 0);
+        assert_eq!(s.current_line_index(), 5);
+        // Page 2 → 3 (last page of chapter 1).
+        page_step(&mut s, PageStep::Down);
+        assert_eq!(s.current_chapter, 0);
+        assert_eq!(s.current_line_index(), 10);
+        // Page 3 → chapter 2 page 1.
+        page_step(&mut s, PageStep::Down);
+        assert_eq!(s.current_chapter, 1, "Space rolls into the next chapter");
+        assert_eq!(s.current_line_index(), 0);
+    }
+
+    #[test]
+    fn page_step_down_at_end_of_book_stays_put() {
+        let body = (0..12)
+            .map(|i| format!("a{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut s = build_state(vec![Chapter::from_text("1".into(), body)]);
+        // Walk to the last page (page 3 of 3).
+        page_step(&mut s, PageStep::Down);
+        page_step(&mut s, PageStep::Down);
+        assert_eq!(s.current_line_index(), 10);
+        // Pressing Space on the last page of the last chapter has nowhere
+        // to go — stay put.
+        page_step(&mut s, PageStep::Down);
+        assert_eq!(s.current_chapter, 0);
+        assert_eq!(s.current_line_index(), 10);
+    }
+
+    #[test]
+    fn page_step_up_rolls_back_to_previous_chapter_last_page() {
+        let ch1 = (0..12)
+            .map(|i| format!("a{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut s = build_state(vec![
+            Chapter::from_text("1".into(), ch1),
+            Chapter::from_text("2".into(), "later".into()),
+        ]);
+        s.current_chapter = 1;
+        s.cursor_offset = 0;
+        page_step(&mut s, PageStep::Up);
+        assert_eq!(
+            s.current_chapter, 0,
+            "Ctrl+b rolls back to the previous chapter's last page"
+        );
+        assert_eq!(s.current_line_index(), 10);
+    }
+
+    #[test]
+    fn page_step_up_at_start_of_book_stays_put() {
+        let body = (0..12)
+            .map(|i| format!("a{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut s = build_state(vec![Chapter::from_text("1".into(), body)]);
+        page_step(&mut s, PageStep::Up);
+        assert_eq!(s.current_chapter, 0);
+        assert_eq!(s.current_line_index(), 0);
+    }
+
+    #[test]
+    fn half_page_step_clamps_to_chapter_bounds() {
+        let body = (0..12)
+            .map(|i| format!("a{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut s = build_state(vec![
+            Chapter::from_text("1".into(), body),
+            Chapter::from_text("2".into(), "later".into()),
+        ]);
+        // Move cursor near the end and press Ctrl+d (half page = 2 lines with
+        // page_height=5). Must clamp to last line, not spill to chapter 2.
+        move_cursor_vertical(&mut s, 11); // last line of chapter 1
+        page_step(&mut s, PageStep::HalfDown);
+        assert_eq!(s.current_chapter, 0);
+        assert_eq!(s.current_line_index(), 11);
+    }
+
+    #[test]
+    fn capital_h_jumps_to_top_of_page() {
+        let body = (0..12)
+            .map(|i| format!("L{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut s = build_state(vec![Chapter::from_text("1".into(), body)]);
+        // Move into the middle of the first page (height = 5 in build_state).
+        move_cursor_vertical(&mut s, 3);
+        assert_eq!(s.current_line_index(), 3);
+        let event = KeyEvent::new(KeyCode::Char('H'), KeyModifiers::NONE);
+        handle_key(&mut s, event);
+        assert_eq!(s.current_line_index(), 0);
+    }
+
+    #[test]
+    fn capital_l_jumps_to_bottom_of_page() {
+        let body = (0..12)
+            .map(|i| format!("L{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut s = build_state(vec![Chapter::from_text("1".into(), body)]);
+        // Cursor starts at line 0; page_height is 5 so the bottom of page 0
+        // is line 4. `L` should jump there.
+        let event = KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE);
+        handle_key(&mut s, event);
+        assert_eq!(s.current_line_index(), 4);
+    }
+
+    #[test]
+    fn capital_h_and_l_stay_within_current_page_after_paging_down() {
+        let body = (0..12)
+            .map(|i| format!("L{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut s = build_state(vec![Chapter::from_text("1".into(), body)]);
+        page_step(&mut s, PageStep::Down);
+        // Now on page 1 (lines 5..10). H lands on line 5, L on line 9.
+        let event = KeyEvent::new(KeyCode::Char('H'), KeyModifiers::NONE);
+        handle_key(&mut s, event);
+        assert_eq!(s.current_line_index(), 5);
+        let event = KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE);
+        handle_key(&mut s, event);
+        assert_eq!(s.current_line_index(), 9);
+    }
+
+    #[test]
     fn ctrl_b_pages_up() {
-        let mut s = build_state(vec![Chapter {
-            title: "1".into(),
-            text: (0..12)
-                .map(|i| format!("L{i}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        }]);
+        let body = (0..12)
+            .map(|i| format!("L{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut s = build_state(vec![Chapter::from_text("1".into(), body)]);
         page_step(&mut s, PageStep::Down);
         let after_down = s.current_line_index();
         assert!(after_down > 0);
@@ -1114,14 +1348,8 @@ mod tests {
     #[test]
     fn pending_g_does_not_trigger_when_chapter_brackets_pressed() {
         let mut s = build_state(vec![
-            Chapter {
-                title: "1".into(),
-                text: "a".into(),
-            },
-            Chapter {
-                title: "2".into(),
-                text: "b".into(),
-            },
+            Chapter::from_text("1".into(), "a".into()),
+            Chapter::from_text("2".into(), "b".into()),
         ]);
         let event = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE);
         handle_key(&mut s, event);

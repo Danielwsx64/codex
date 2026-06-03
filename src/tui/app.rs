@@ -105,6 +105,14 @@ impl App {
             return Ok(());
         }
 
+        // Backspace mirrors Esc as a "back / cancel" key everywhere except
+        // inside text input. We translate before dispatch so screens don't
+        // each have to special-case it. The palette is excluded so Backspace
+        // keeps deleting characters in the `:` input; text-capturing screens
+        // (wizard fields, library edit/filter inputs) are excluded for the
+        // same reason via `captures_text_input()`.
+        let key = self.translate_back_keys(key);
+
         if self.confirm.is_some() {
             // Ctrl+C is the hard exit and bypasses the guard it would normally
             // open; every other key drives the dialog.
@@ -153,6 +161,24 @@ impl App {
 
         self.handle_screen(key);
         Ok(())
+    }
+
+    fn translate_back_keys(&self, key: KeyEvent) -> KeyEvent {
+        if key.code != KeyCode::Backspace {
+            return key;
+        }
+        // Palette has its own text input where Backspace is the editing key.
+        if self.palette.is_some() {
+            return key;
+        }
+        // Screen-level text capture (wizard fields, library filter/edit).
+        if self.captures_text_input() {
+            return key;
+        }
+        KeyEvent {
+            code: KeyCode::Esc,
+            ..key
+        }
     }
 
     fn captures_text_input(&self) -> bool {
@@ -682,6 +708,56 @@ mod tests {
         app.help = Some(help::State);
         app.dispatch(Event::Key(key(KeyCode::Esc))).unwrap();
         assert!(app.help.is_none());
+    }
+
+    #[test]
+    fn backspace_mirrors_esc_in_help_overlay() {
+        let mut app = fresh_app();
+        app.help = Some(help::State);
+        app.dispatch(Event::Key(key(KeyCode::Backspace))).unwrap();
+        assert!(app.help.is_none(), "Backspace should close help like Esc");
+    }
+
+    #[test]
+    fn backspace_mirrors_esc_in_quit_confirmation() {
+        let mut app = fresh_app();
+        app.dispatch(Event::Key(key(KeyCode::Char('q')))).unwrap();
+        assert!(app.confirm.is_some());
+        app.dispatch(Event::Key(key(KeyCode::Backspace))).unwrap();
+        assert!(
+            app.confirm.is_none(),
+            "Backspace should cancel the confirm dialog like Esc"
+        );
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn backspace_in_palette_does_not_close_palette() {
+        let mut app = fresh_app();
+        app.dispatch(Event::Key(key(KeyCode::Char(':')))).unwrap();
+        assert!(app.palette.is_some());
+        // Backspace inside the palette is the editing key; it must not be
+        // translated to Esc (which would close the palette).
+        app.dispatch(Event::Key(key(KeyCode::Backspace))).unwrap();
+        assert!(
+            app.palette.is_some(),
+            "Backspace inside palette stays as text-edit, palette remains open"
+        );
+    }
+
+    #[test]
+    fn backspace_in_wizard_text_field_does_not_translate() {
+        let mut app = fresh_app();
+        app.screen = Screen::NewCatalog(new_catalog::State::new(new_catalog::Origin::Welcome));
+        // Type two characters then Backspace; expect the wizard to delete a
+        // char, not abort the screen.
+        app.dispatch(Event::Key(key(KeyCode::Char('a')))).unwrap();
+        app.dispatch(Event::Key(key(KeyCode::Char('b')))).unwrap();
+        app.dispatch(Event::Key(key(KeyCode::Backspace))).unwrap();
+        match &app.screen {
+            Screen::NewCatalog(s) => assert_eq!(s.name.value(), "a"),
+            _ => panic!("expected wizard still active"),
+        }
     }
 
     #[test]
