@@ -29,6 +29,10 @@ const TABLE_BINDINGS: &[Binding] = &[
         desc: "move selection",
     },
     Binding {
+        keys: "Enter",
+        desc: "actions menu for selected book",
+    },
+    Binding {
         keys: "i",
         desc: "inspect book",
     },
@@ -112,6 +116,21 @@ const INSPECT_BINDINGS: &[Binding] = &[
     Binding {
         keys: "Esc / Enter / i",
         desc: "close",
+    },
+];
+
+const CONTEXT_MENU_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "↑↓ / j k",
+        desc: "move selection",
+    },
+    Binding {
+        keys: "Enter",
+        desc: "run action",
+    },
+    Binding {
+        keys: "Esc",
+        desc: "close menu",
     },
 ];
 
@@ -238,6 +257,10 @@ pub fn help_sections(state: &State) -> Vec<Section> {
             title: "Inspect",
             bindings: INSPECT_BINDINGS,
         }],
+        Some(Overlay::ContextMenu { .. }) => vec![Section {
+            title: "Actions",
+            bindings: CONTEXT_MENU_BINDINGS,
+        }],
         Some(Overlay::ConfirmRm { .. }) => vec![Section {
             title: "Confirm remove",
             bindings: CONFIRM_RM_BINDINGS,
@@ -349,6 +372,9 @@ pub struct ActiveFilter {
 
 #[derive(Debug)]
 pub enum Overlay {
+    ContextMenu {
+        cursor: usize,
+    },
     Inspect {
         book: Box<Book>,
         absolute_path: PathBuf,
@@ -381,6 +407,24 @@ pub enum TreeEntry {
     Dir { path: PathBuf, name: String },
     File { path: PathBuf, name: String },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuItem {
+    Open,
+    Inspect,
+    Edit,
+    SyncEmbed,
+    Delete,
+}
+
+// Order defines the menu layout; Open first so plain Enter-Enter reads a book.
+const MENU_ITEMS: &[(MenuItem, &str)] = &[
+    (MenuItem::Open, "Open in reader"),
+    (MenuItem::Inspect, "Inspect"),
+    (MenuItem::Edit, "Edit metadata"),
+    (MenuItem::SyncEmbed, "Sync embed"),
+    (MenuItem::Delete, "Delete"),
+];
 
 #[derive(Debug)]
 pub enum LibraryAction {
@@ -471,6 +515,7 @@ pub fn handle_key(state: &mut State, key: KeyEvent) -> LibraryAction {
             }
             LibraryAction::None
         }
+        KeyCode::Enter => open_context_menu(state),
         KeyCode::Char('i') => open_inspect(state),
         KeyCode::Char('o') => open_reader_from_table(state),
         KeyCode::Char('e') => open_edit_from_table(state),
@@ -526,6 +571,7 @@ pub fn open_search_wizard(state: &mut State) {
 
 fn handle_overlay_key(state: &mut State, key: KeyEvent) -> LibraryAction {
     match state.overlay {
+        Some(Overlay::ContextMenu { .. }) => handle_context_menu_key(state, key),
         Some(Overlay::Inspect { .. }) => match key.code {
             KeyCode::Char('e') => open_edit_from_inspect(state),
             KeyCode::Char('w') => embed_from_inspect(state),
@@ -617,6 +663,51 @@ fn open_inspect(state: &mut State) -> LibraryAction {
         absolute_path,
     });
     LibraryAction::None
+}
+
+fn open_context_menu(state: &mut State) -> LibraryAction {
+    if state.rows.get(state.cursor).is_none() {
+        return LibraryAction::None;
+    }
+    state.overlay = Some(Overlay::ContextMenu { cursor: 0 });
+    LibraryAction::None
+}
+
+fn handle_context_menu_key(state: &mut State, key: KeyEvent) -> LibraryAction {
+    let Some(Overlay::ContextMenu { cursor }) = state.overlay.as_mut() else {
+        return LibraryAction::None;
+    };
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => {
+            *cursor = (*cursor + 1) % MENU_ITEMS.len();
+            LibraryAction::None
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            *cursor = (*cursor + MENU_ITEMS.len() - 1) % MENU_ITEMS.len();
+            LibraryAction::None
+        }
+        KeyCode::Esc => {
+            state.overlay = None;
+            LibraryAction::None
+        }
+        KeyCode::Enter => {
+            let item = MENU_ITEMS[*cursor].0;
+            state.overlay = None;
+            run_menu_item(state, item)
+        }
+        _ => LibraryAction::None,
+    }
+}
+
+// Each item reuses the exact flow its table/inspect shortcut triggers.
+fn run_menu_item(state: &mut State, item: MenuItem) -> LibraryAction {
+    match item {
+        MenuItem::Open => open_reader_from_table(state),
+        MenuItem::Inspect => open_inspect(state),
+        MenuItem::Edit => open_edit_from_table(state),
+        MenuItem::SyncEmbed => embed_from_table(state),
+        MenuItem::Delete => open_confirm_rm(state),
+    }
 }
 
 fn open_edit_from_table(state: &mut State) -> LibraryAction {
@@ -727,26 +818,39 @@ fn close_edit(state: &mut State, origin: edit::Origin, saved: Option<Book>) -> L
 }
 
 fn embed_from_inspect(state: &mut State) -> LibraryAction {
-    let Some(ctx) = state.catalog.clone() else {
-        return LibraryAction::Status(StatusMessage::error("no catalog selected"));
-    };
-    let (path, format, book) = match state.overlay.as_ref() {
+    let (book, path) = match state.overlay.as_ref() {
         Some(Overlay::Inspect {
             book,
             absolute_path,
-        }) => {
-            let format = match import::Format::parse_label(&book.format) {
-                Some(f) => f,
-                None => {
-                    return LibraryAction::Status(StatusMessage::error(format!(
-                        "unknown format `{}`",
-                        book.format
-                    )));
-                }
-            };
-            (absolute_path.clone(), format, book.as_ref().clone())
-        }
+        }) => (book.as_ref().clone(), absolute_path.clone()),
         _ => return LibraryAction::None,
+    };
+    embed_book(state, book, path)
+}
+
+fn embed_from_table(state: &mut State) -> LibraryAction {
+    let Some(ctx) = state.catalog.clone() else {
+        return LibraryAction::Status(StatusMessage::error("no catalog selected"));
+    };
+    let Some(book) = state.rows.get(state.cursor).cloned() else {
+        return LibraryAction::None;
+    };
+    let path = ctx.dir.join(&book.file_path);
+    embed_book(state, book, path)
+}
+
+fn embed_book(state: &mut State, book: Book, path: PathBuf) -> LibraryAction {
+    let Some(ctx) = state.catalog.clone() else {
+        return LibraryAction::Status(StatusMessage::error("no catalog selected"));
+    };
+    let format = match import::Format::parse_label(&book.format) {
+        Some(f) => f,
+        None => {
+            return LibraryAction::Status(StatusMessage::error(format!(
+                "unknown format `{}`",
+                book.format
+            )));
+        }
     };
     // Respect the persisted state: don't re-touch files already synced and
     // don't retry formats we've already classified as impossible to embed.
@@ -1230,6 +1334,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
     }
 
     match &state.overlay {
+        Some(Overlay::ContextMenu { cursor }) => render_context_menu(frame, area, state, *cursor),
         Some(Overlay::Inspect {
             book,
             absolute_path,
@@ -1329,6 +1434,47 @@ fn render_table(frame: &mut Frame<'_>, area: Rect, state: &State) {
     let mut s = TableState::default();
     s.select(Some(state.cursor.min(state.rows.len().saturating_sub(1))));
     frame.render_stateful_widget(table, area, &mut s);
+}
+
+fn render_context_menu(frame: &mut Frame<'_>, area: Rect, state: &State, cursor: usize) {
+    let book_title = state
+        .rows
+        .get(state.cursor)
+        .map(|b| b.title.as_str())
+        .unwrap_or_default();
+    let modal_title = format!(" {book_title} ");
+    let max_label = MENU_ITEMS
+        .iter()
+        .map(|(_, label)| label.chars().count())
+        .max()
+        .unwrap_or(0);
+    let target_w = (max_label + 6)
+        .max(modal_title.chars().count() + 4)
+        .min(area.width as usize) as u16;
+    let target_h = (MENU_ITEMS.len() as u16 + 2).min(area.height);
+    let rect = centered_rect(target_w, target_h, area);
+
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(modal_title)
+        .title_alignment(Alignment::Center)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let items: Vec<ListItem> = MENU_ITEMS
+        .iter()
+        .map(|(_, label)| ListItem::new(Line::from(format!(" {label}"))))
+        .collect();
+    let list = List::new(items).highlight_style(
+        Style::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    );
+    let mut list_state = ListState::default();
+    list_state.select(Some(cursor.min(MENU_ITEMS.len() - 1)));
+    frame.render_stateful_widget(list, inner, &mut list_state);
 }
 
 fn render_inspect_modal(frame: &mut Frame<'_>, area: Rect, book: &Book, absolute_path: &Path) {
@@ -2514,6 +2660,150 @@ mod tests {
         let sections = help_sections(&state);
         assert_eq!(sections.len(), 2);
         assert_eq!(sections[1].title, "Rating field");
+    }
+
+    #[test]
+    fn enter_on_table_opens_context_menu_with_cursor_on_open() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book_with_file(&cat, "Book", "Author");
+        let mut state = State::load(&reg);
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+        assert!(matches!(action, LibraryAction::None));
+        match state.overlay.as_ref() {
+            Some(Overlay::ContextMenu { cursor }) => {
+                assert_eq!(*cursor, 0);
+                assert_eq!(MENU_ITEMS[*cursor].0, MenuItem::Open);
+            }
+            other => panic!("expected ContextMenu overlay, got {other:?}"),
+        }
+        assert_eq!(help_sections(&state)[0].title, "Actions");
+    }
+
+    #[test]
+    fn enter_on_empty_table_does_nothing() {
+        let (_tmp, _cat, reg) = setup_with_catalog();
+        let mut state = State::load(&reg);
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn context_menu_cursor_cycles_and_esc_closes() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book_with_file(&cat, "Book", "Author");
+        let mut state = State::load(&reg);
+        handle_key(&mut state, key(KeyCode::Enter));
+
+        handle_key(&mut state, key(KeyCode::Char('j')));
+        match state.overlay.as_ref() {
+            Some(Overlay::ContextMenu { cursor }) => assert_eq!(*cursor, 1),
+            _ => panic!("expected ContextMenu overlay"),
+        }
+        handle_key(&mut state, key(KeyCode::Char('k')));
+        handle_key(&mut state, key(KeyCode::Char('k')));
+        match state.overlay.as_ref() {
+            Some(Overlay::ContextMenu { cursor }) => {
+                assert_eq!(*cursor, MENU_ITEMS.len() - 1, "k on first item wraps")
+            }
+            _ => panic!("expected ContextMenu overlay"),
+        }
+        handle_key(&mut state, key(KeyCode::Esc));
+        assert!(state.overlay.is_none());
+    }
+
+    fn select_menu_item(state: &mut State, item: MenuItem) -> LibraryAction {
+        handle_key(state, key(KeyCode::Enter));
+        let target = MENU_ITEMS.iter().position(|(i, _)| *i == item).unwrap();
+        for _ in 0..target {
+            handle_key(state, key(KeyCode::Down));
+        }
+        handle_key(state, key(KeyCode::Enter))
+    }
+
+    #[test]
+    fn context_menu_open_returns_open_reader_action() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book_with_file(&cat, "Book", "Author");
+        let mut state = State::load(&reg);
+        let action = select_menu_item(&mut state, MenuItem::Open);
+        match action {
+            LibraryAction::OpenReader { book, .. } => assert_eq!(book.title, "Book"),
+            other => panic!("expected OpenReader, got {other:?}"),
+        }
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn context_menu_inspect_opens_inspect_overlay() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book_with_file(&cat, "Book", "Author");
+        let mut state = State::load(&reg);
+        select_menu_item(&mut state, MenuItem::Inspect);
+        assert!(matches!(state.overlay, Some(Overlay::Inspect { .. })));
+    }
+
+    #[test]
+    fn context_menu_edit_opens_edit_with_table_origin() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book_with_file(&cat, "Book", "Author");
+        let mut state = State::load(&reg);
+        select_menu_item(&mut state, MenuItem::Edit);
+        match state.overlay.as_ref() {
+            Some(Overlay::Edit(s)) => assert_eq!(s.origin, edit::Origin::Table),
+            other => panic!("expected Edit overlay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn context_menu_delete_opens_confirm_rm() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book_with_file(&cat, "Doomed", "Author");
+        let mut state = State::load(&reg);
+        select_menu_item(&mut state, MenuItem::Delete);
+        match state.overlay.as_ref() {
+            Some(Overlay::ConfirmRm { title, .. }) => assert_eq!(title, "Doomed"),
+            other => panic!("expected ConfirmRm overlay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn context_menu_sync_embed_respects_synced_status() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        let id = insert_book_with_file(&cat, "Synced", "Author");
+        let conn = catalog::open_existing(&cat).unwrap();
+        books::mark_embed_synced(&conn, id).unwrap();
+        drop(conn);
+
+        let mut state = State::load(&reg);
+        let action = select_menu_item(&mut state, MenuItem::SyncEmbed);
+        match action {
+            LibraryAction::Status(s) => {
+                assert!(s.text.contains("already synced"), "got status: {}", s.text);
+            }
+            other => panic!("expected status message, got {other:?}"),
+        }
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn context_menu_sync_embed_unsupported_format_reports_error() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        let conn = catalog::open_existing(&cat).unwrap();
+        conn.execute(
+            "INSERT INTO books (title, author, format, file_path) VALUES ('M', 'A', 'mobi', 'books/1/A_-_M.mobi')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let mut state = State::load(&reg);
+        let action = select_menu_item(&mut state, MenuItem::SyncEmbed);
+        match action {
+            LibraryAction::Status(s) => {
+                assert!(s.text.contains("not supported"), "got status: {}", s.text);
+            }
+            other => panic!("expected status message, got {other:?}"),
+        }
     }
 
     #[test]
