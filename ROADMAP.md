@@ -217,17 +217,31 @@ Fora do escopo desta entrega (defer):
 Estende o leitor para o ecossistema Kindle. `cdx add` já aceita
 MOBI/AZW3; falta só o caminho de leitura no reader.
 
-- [ ] Reader para MOBI via crate `mobi` (`Mobi::content()`); reaproveita
-      o pipeline `html2text` → `layout` da v0.8.
-- [ ] Reader para AZW3 (KF8) — o container traz dois streams (MOBI
-      legado KF7 + KF8). O crate `mobi` faz parsing parcial do KF8; em
-      alguns arquivos cai no MOBI legado. Validar com livros conhecidos
-      e documentar quais sub-formatos funcionam.
-- [ ] Detectar DRM (Amazon Topaz / KFX / AZW protegido) com mensagem
+- [x] Reader para MOBI via crate `mobi` (`content_as_string()`, com
+      fallback lossy pra livros CP1252); reaproveita o pipeline
+      `html2text` → `layout` da v0.8.
+- [x] Reader para AZW3 (KF8) — o container traz dois streams (MOBI
+      legado KF7 + KF8). O crate `mobi` **não** parseia KF8: AZW3
+      dual-stream é lido pelo stream legado; KF8-only (saída típica do
+      Calibre) falha com mensagem clara sugerindo conversão pra EPUB.
+- [x] Detectar DRM (Amazon Topaz / KFX / AZW protegido) com mensagem
       clara — **o cdx não remove DRM**. Só funcionam livros sideloaded
       sem DRM.
-- [ ] Capítulos para MOBI/AZW3 — extrair o índice se disponível,
-      senão tratar o livro como um único capítulo.
+- [x] Capítulos para MOBI/AZW3 — o crate não expõe o índice (INDX),
+      então o split é nos marcadores `<mbp:pagebreak/>` do MOBI6
+      (determinístico, títulos "Chapter N"); sem marcadores o livro
+      vira um único capítulo.
+
+Sub-formatos validados (limitações do crate `mobi` 0.8):
+
+- MOBI6 PalmDOC/sem compressão → lê normalmente.
+- HUFF/CDIC → recusado com mensagem clara (decoder do crate não é
+  confiável; preferimos recusar a renderizar livro em branco).
+- AZW3 KF8-only → recusado com mensagem clara ("convert it to EPUB").
+- Topaz / KFX → detectados por magic bytes antes do parse, recusados.
+- Arquivo malformado/truncado → o parser do crate pode panicar; o
+  reader captura via `catch_unwind` e devolve erro normal em vez de
+  derrubar a sessão da TUI.
 
 ## v0.8.2 — Leitor: PDF
 

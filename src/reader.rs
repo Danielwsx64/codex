@@ -6,6 +6,8 @@ use thiserror::Error;
 pub mod layout;
 pub mod style;
 
+mod mobi;
+
 use crate::catalog::books::Book as CatalogBook;
 use crate::epub;
 use crate::import::Format;
@@ -31,6 +33,24 @@ pub enum Error {
         #[source]
         source: html2text::Error,
     },
+    #[error("book file `{}` is DRM-protected; cdx does not remove DRM", .path.display())]
+    DrmProtected { path: PathBuf },
+    #[error("book file `{}` uses HUFF/CDIC compression, which the reader cannot decode", .path.display())]
+    UnsupportedCompression { path: PathBuf },
+    #[error("book file `{}` is not a readable MOBI container ({kind})", .path.display())]
+    UnsupportedKindleContainer { path: PathBuf, kind: String },
+    #[error("AZW3 file `{}` carries only a KF8 stream, which the reader cannot decode; convert it to EPUB first", .path.display())]
+    Azw3NoLegacyStream { path: PathBuf },
+    #[error("failed to parse mobi file `{}`: {source}", .path.display())]
+    Mobi {
+        path: PathBuf,
+        #[source]
+        source: ::mobi::MobiError,
+    },
+    #[error("mobi parser crashed reading `{}`; the file is likely malformed or truncated", .path.display())]
+    MobiPanic { path: PathBuf },
+    #[error("book file `{}` produced no readable text", .path.display())]
+    EmptyContent { path: PathBuf },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -93,7 +113,8 @@ fn read_chapters(path: &Path, format: Format, render_width: usize) -> Result<Vec
         Format::Epub => read_epub(path, render_width),
         Format::Txt => read_txt(path),
         Format::Md => read_md(path),
-        Format::Pdf | Format::Mobi | Format::Azw3 => Err(Error::UnsupportedFormat {
+        Format::Mobi | Format::Azw3 => mobi::read_mobi(path, render_width),
+        Format::Pdf => Err(Error::UnsupportedFormat {
             format: format.label().to_string(),
         }),
     }
@@ -127,7 +148,9 @@ fn read_epub(path: &Path, render_width: usize) -> Result<Vec<Chapter>> {
 /// arrive as plain text prefixed by `#` (per `RichDecorator::header_prefix`);
 /// we strip that and tag the whole line with a heading level so the renderer
 /// can apply a level-dependent style.
-fn tagged_lines_to_styled(tagged: &[TaggedLine<Vec<RichAnnotation>>]) -> Vec<StyledLine> {
+pub(crate) fn tagged_lines_to_styled(
+    tagged: &[TaggedLine<Vec<RichAnnotation>>],
+) -> Vec<StyledLine> {
     tagged.iter().map(tagged_line_to_styled).collect()
 }
 

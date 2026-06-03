@@ -63,6 +63,10 @@ impl TerminalGuard {
         }
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
+        // Last step, so a failed setup never leaves logs silenced: while the
+        // TUI owns the terminal, tty-bound log lines are dropped instead of
+        // smearing over the alternate screen (see `crate::log_writer`).
+        crate::set_tui_owns_terminal(true);
         Ok(Self {
             terminal,
             keyboard_enhanced,
@@ -72,6 +76,7 @@ impl TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        crate::set_tui_owns_terminal(false);
         if self.keyboard_enhanced {
             let _ = execute!(self.terminal.backend_mut(), PopKeyboardEnhancementFlags);
         }

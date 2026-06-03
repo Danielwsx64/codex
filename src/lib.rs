@@ -12,7 +12,8 @@ pub mod reader;
 pub mod tui;
 pub mod welcome;
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use clap::Parser;
@@ -134,8 +135,51 @@ fn init_tracing(verbose: u8) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(std::io::stderr)
+        .with_writer(log_writer)
         .try_init();
+}
+
+static TUI_OWNS_TERMINAL: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn set_tui_owns_terminal(owned: bool) {
+    TUI_OWNS_TERMINAL.store(owned, Ordering::Relaxed);
+}
+
+// While the TUI holds the terminal (raw mode + alternate screen), a log line
+// written to a tty stderr smears over the rendered UI. Drop those instead; a
+// redirected stderr (`cdx tui 2>cdx.log`) still receives everything.
+fn silence_logs(tui_owns_terminal: bool, stderr_is_tty: bool) -> bool {
+    tui_owns_terminal && stderr_is_tty
+}
+
+enum LogWriter {
+    Stderr(std::io::Stderr),
+    Sink,
+}
+
+impl Write for LogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            LogWriter::Stderr(out) => out.write(buf),
+            LogWriter::Sink => Ok(buf.len()),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            LogWriter::Stderr(out) => out.flush(),
+            LogWriter::Sink => Ok(()),
+        }
+    }
+}
+
+fn log_writer() -> LogWriter {
+    let owned = TUI_OWNS_TERMINAL.load(Ordering::Relaxed);
+    if silence_logs(owned, std::io::stderr().is_terminal()) {
+        LogWriter::Sink
+    } else {
+        LogWriter::Stderr(std::io::stderr())
+    }
 }
 
 fn print_welcome() -> Result<()> {
@@ -144,4 +188,24 @@ fn print_welcome() -> Result<()> {
     welcome::render_plain(&mut out)?;
     out.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logs_silenced_only_when_tui_owns_a_tty_stderr() {
+        assert!(silence_logs(true, true));
+        assert!(!silence_logs(true, false), "redirected stderr keeps logs");
+        assert!(!silence_logs(false, true), "CLI mode keeps logs");
+        assert!(!silence_logs(false, false));
+    }
+
+    #[test]
+    fn sink_writer_swallows_bytes_without_error() {
+        let mut sink = LogWriter::Sink;
+        assert_eq!(sink.write(b"warn line").unwrap(), 9);
+        sink.flush().unwrap();
+    }
 }
