@@ -49,7 +49,7 @@ fn add_imports_pdf_metadata() {
 fn add_rejects_unsupported_format_with_clear_message() {
     let f = Fixture::new();
     f.init_lib();
-    let bad = f.work_dir.path().join("note.txt");
+    let bad = f.work_dir.path().join("note.doc");
     fs::write(&bad, b"not a book").unwrap();
 
     f.cdx()
@@ -58,7 +58,7 @@ fn add_rejects_unsupported_format_with_clear_message() {
         .assert()
         .failure()
         .stdout(predicate::str::contains("not supported"))
-        .stdout(predicate::str::contains("epub, pdf, mobi, azw3"));
+        .stdout(predicate::str::contains("epub, pdf, mobi, azw3, txt, md"));
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn add_supports_multiple_files_in_one_call() {
 fn add_partial_failure_keeps_successful_imports() {
     let f = Fixture::new();
     let lib = f.init_lib();
-    let bad = f.work_dir.path().join("oops.txt");
+    let bad = f.work_dir.path().join("oops.doc");
     fs::write(&bad, b"x").unwrap();
 
     let assert = f

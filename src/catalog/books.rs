@@ -562,6 +562,42 @@ pub fn mark_embed_synced(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadingProgress {
+    pub chapter: usize,
+    pub offset: usize,
+}
+
+pub fn fetch_reading_progress(conn: &Connection, id: i64) -> Result<Option<ReadingProgress>> {
+    let row: Option<(Option<i64>, Option<i64>)> = conn
+        .query_row(
+            "SELECT last_chapter, last_offset FROM books WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((Some(chapter), Some(offset))) = row else {
+        return Ok(None);
+    };
+    let chapter = usize::try_from(chapter).unwrap_or(0);
+    let offset = usize::try_from(offset).unwrap_or(0);
+    Ok(Some(ReadingProgress { chapter, offset }))
+}
+
+pub fn update_reading_progress(
+    conn: &Connection,
+    id: i64,
+    progress: ReadingProgress,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE books
+         SET last_chapter = ?1, last_offset = ?2, last_read_at = datetime('now')
+         WHERE id = ?3",
+        params![progress.chapter as i64, progress.offset as i64, id],
+    )?;
+    Ok(())
+}
+
 pub fn mark_embed_unsupported(conn: &Connection, id: i64) -> Result<()> {
     conn.execute(
         "UPDATE books SET embed_status = 'unsupported', embed_synced_at = NULL WHERE id = ?1",

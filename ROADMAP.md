@@ -178,18 +178,73 @@ Ciclo de embed: qualquer edit (`cdx edit` ou TUI `e`) marca o livro como
       existente (lê `metadata.db`)
 - [ ] Export de catálogo cdx em formato neutro (JSON/CSV)
 
-## v0.8 — TUI leitor
+## v0.8 — TUI leitor (EPUB + TXT/Markdown)
 
 Leitura de livros direto no terminal — única feature TUI-only do
 roadmap (cf. exceção declarada no princípio de paridade). As demais
 telas da TUI ficam distribuídas pelos milestones anteriores, junto
-com seus comandos CLI.
+com seus comandos CLI. Sem comando CLI equivalente: o leitor é
+TUI-only por design.
 
-- [ ] Renderização de EPUB (texto + paginação)
-- [ ] Renderização de TXT/Markdown
-- [ ] Persistir progresso de leitura por livro no catálogo
-- [ ] Navegação por capítulos / sumário
-- [x] `?` abre help contextual com atalhos de teclado da tela ativa
+- [x] Renderização de EPUB — extração do spine via módulo `src/epub`
+      (estende o que já existia em `src/import/epub.rs`) + HTML→texto
+      via `html2text`. Reflow recomputado on resize.
+- [x] Renderização de TXT/Markdown — `cdx add` aceita `.txt` e `.md`;
+      Markdown via `pulldown-cmark`; TXT por leitura direta.
+- [x] Paginação por altura do viewport — `:N` salta pela página
+      absoluta do livro; `:cN` salta para o capítulo N. Footer mostra
+      `cap X/Y · pág A/B`.
+- [x] Cursor visual estilo vim (`h j k l w b e 0 $ gg G`),
+      paginação (`Space`, `Ctrl+f`, `Ctrl+b`, `Ctrl+d`, `Ctrl+u`),
+      troca de capítulo (`]`, `[`). `Esc` volta para a Library.
+- [x] Persistir progresso de leitura — migration `0006_reading_progress`
+      grava `last_chapter`, `last_offset`, `last_read_at` em `books`.
+      Salva ao trocar de capítulo, paginar e ao sair do leitor.
+- [x] Navegação por capítulos — `[`/`]` entre capítulos; `:cN` salta
+      direto. TOC do EPUB (NCX ou nav.xhtml) usada para nomear os
+      capítulos quando disponível.
+- [x] `?` abre help contextual com atalhos de teclado da tela ativa.
+
+Fora do escopo desta entrega (defer):
+
+- Seleção visual (`v`), busca (`/`, `n`, `N`), bookmarks.
+- TOC modal navegável (lista atual fica embutida na footer/help).
+- Imagens inline (Kitty/Sixel) — depende de detecção de terminal.
+- Exibir `last_read_at` em `cdx ls` / `cdx inspect`.
+
+## v0.8.1 — Leitor: Kindle (MOBI/AZW3)
+
+Estende o leitor para o ecossistema Kindle. `cdx add` já aceita
+MOBI/AZW3; falta só o caminho de leitura no reader.
+
+- [ ] Reader para MOBI via crate `mobi` (`Mobi::content()`); reaproveita
+      o pipeline `html2text` → `layout` da v0.8.
+- [ ] Reader para AZW3 (KF8) — o container traz dois streams (MOBI
+      legado KF7 + KF8). O crate `mobi` faz parsing parcial do KF8; em
+      alguns arquivos cai no MOBI legado. Validar com livros conhecidos
+      e documentar quais sub-formatos funcionam.
+- [ ] Detectar DRM (Amazon Topaz / KFX / AZW protegido) com mensagem
+      clara — **o cdx não remove DRM**. Só funcionam livros sideloaded
+      sem DRM.
+- [ ] Capítulos para MOBI/AZW3 — extrair o índice se disponível,
+      senão tratar o livro como um único capítulo.
+
+## v0.8.2 — Leitor: PDF
+
+PDF é layout-fixo, fundamentalmente hostil ao reflow do terminal.
+
+- [ ] Reader para PDF single-column via `pdf-extract` (texto sequencial
+      reaproveitado pelo `layout::lay_out`). Aceitável para a maioria
+      de livros de ficção exportados em PDF.
+- [ ] Heurística para detectar multi-coluna (gaps verticais em colunas
+      separadas) — em texto multi-coluna o `pdf-extract` mistura linhas
+      entre colunas. Sinalizar como "best-effort: layout não preservado"
+      e seguir mesmo assim, ou pedir conversão para EPUB.
+- [ ] Tabelas, fórmulas matemáticas, imagens vetoriais — ficam
+      degradadas. Documentar como limitação.
+- [ ] **Não usar `pdfium-render`**: exige runtime Pdfium em C++, o que
+      quebra a portabilidade "binário único" do cdx. `lopdf` (já dep)
+      é só para metadados; para texto, `pdf-extract` é o caminho.
 
 ## v1.0 — Estável
 

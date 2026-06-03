@@ -70,10 +70,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub fn compute(path: &Path, format: Format) -> Result<Vec<Fingerprint>> {
     match format {
         Format::Epub => epub_fingerprints(path),
-        Format::Pdf | Format::Mobi | Format::Azw3 => Ok(vec![Fingerprint {
-            kind: Kind::Full,
-            hash: hash_full(path)?,
-        }]),
+        Format::Pdf | Format::Mobi | Format::Azw3 | Format::Txt | Format::Md => {
+            Ok(vec![Fingerprint {
+                kind: Kind::Full,
+                hash: hash_full(path)?,
+            }])
+        }
     }
 }
 

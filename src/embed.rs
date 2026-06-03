@@ -59,7 +59,9 @@ pub fn embed_into_file(path: &Path, format: Format, book: &Book) -> Result<Embed
             pdf::write(path, book)?;
             Ok(EmbedOutcome::Written)
         }
-        Format::Mobi | Format::Azw3 => Ok(EmbedOutcome::Unsupported { format }),
+        Format::Mobi | Format::Azw3 | Format::Txt | Format::Md => {
+            Ok(EmbedOutcome::Unsupported { format })
+        }
     }
 }
 

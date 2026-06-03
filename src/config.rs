@@ -51,6 +51,45 @@ pub struct CatalogEntry {
     pub description: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReaderSettings {
+    /// Maximum width (in columns) used for the text body. When the terminal
+    /// is wider than this, the content is centered and the surrounding space
+    /// becomes the horizontal margin. Set to 0 to use the full width.
+    #[serde(default = "ReaderSettings::default_max_content_width")]
+    pub max_content_width: u16,
+    /// Minimum left/right padding (in columns) added around the text body
+    /// even when the terminal is narrower than `max_content_width`.
+    #[serde(default = "ReaderSettings::default_horizontal_margin")]
+    pub horizontal_margin: u16,
+    /// Top/bottom padding (in rows) reserved above the text body and below
+    /// the footer. Makes line-of-sight more comfortable.
+    #[serde(default = "ReaderSettings::default_vertical_margin")]
+    pub vertical_margin: u16,
+}
+
+impl ReaderSettings {
+    const fn default_max_content_width() -> u16 {
+        80
+    }
+    const fn default_horizontal_margin() -> u16 {
+        2
+    }
+    const fn default_vertical_margin() -> u16 {
+        1
+    }
+}
+
+impl Default for ReaderSettings {
+    fn default() -> Self {
+        Self {
+            max_content_width: Self::default_max_content_width(),
+            horizontal_margin: Self::default_horizontal_margin(),
+            vertical_margin: Self::default_vertical_margin(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Registry {
     pub version: u32,
@@ -58,6 +97,8 @@ pub struct Registry {
     pub current: Option<String>,
     #[serde(default, rename = "catalog")]
     pub catalogs: Vec<CatalogEntry>,
+    #[serde(default)]
+    pub reader: ReaderSettings,
 }
 
 impl Default for Registry {
@@ -66,6 +107,7 @@ impl Default for Registry {
             version: CURRENT_VERSION,
             current: None,
             catalogs: Vec::new(),
+            reader: ReaderSettings::default(),
         }
     }
 }
@@ -311,6 +353,54 @@ mod tests {
         reg.save(dir.path()).unwrap();
         let loaded = Registry::load(dir.path()).unwrap();
         assert_eq!(reg, loaded);
+    }
+
+    #[test]
+    fn reader_settings_default_when_section_absent() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "version = 1\ncurrent = \"x\"\n[[catalog]]\nname=\"x\"\npath=\"/p\"\n",
+        )
+        .unwrap();
+        let reg = Registry::load(dir.path()).unwrap();
+        assert_eq!(reg.reader, ReaderSettings::default());
+    }
+
+    #[test]
+    fn reader_settings_roundtrip() {
+        let dir = tempdir().unwrap();
+        let reg = Registry {
+            reader: ReaderSettings {
+                max_content_width: 100,
+                horizontal_margin: 4,
+                vertical_margin: 2,
+            },
+            ..Registry::default()
+        };
+        reg.save(dir.path()).unwrap();
+        let loaded = Registry::load(dir.path()).unwrap();
+        assert_eq!(loaded.reader, reg.reader);
+    }
+
+    #[test]
+    fn reader_settings_partial_section_uses_defaults_for_missing_fields() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "version = 1\n[reader]\nmax_content_width = 60\n",
+        )
+        .unwrap();
+        let reg = Registry::load(dir.path()).unwrap();
+        assert_eq!(reg.reader.max_content_width, 60);
+        assert_eq!(
+            reg.reader.horizontal_margin,
+            ReaderSettings::default().horizontal_margin
+        );
+        assert_eq!(
+            reg.reader.vertical_margin,
+            ReaderSettings::default().vertical_margin
+        );
     }
 
     #[test]

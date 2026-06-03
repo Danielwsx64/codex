@@ -5,9 +5,10 @@ use thiserror::Error;
 pub mod epub;
 pub mod mobi;
 pub mod pdf;
+pub mod text;
 
 const MAX_STEM_LEN: usize = 150;
-const SUPPORTED_LIST: &str = "epub, pdf, mobi, azw3";
+const SUPPORTED_LIST: &str = "epub, pdf, mobi, azw3, txt, md";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -15,6 +16,8 @@ pub enum Format {
     Pdf,
     Mobi,
     Azw3,
+    Txt,
+    Md,
 }
 
 impl Format {
@@ -24,6 +27,8 @@ impl Format {
             Format::Pdf => "pdf",
             Format::Mobi => "mobi",
             Format::Azw3 => "azw3",
+            Format::Txt => "txt",
+            Format::Md => "md",
         }
     }
 
@@ -37,6 +42,8 @@ impl Format {
             "pdf" => Some(Format::Pdf),
             "mobi" => Some(Format::Mobi),
             "azw3" => Some(Format::Azw3),
+            "txt" => Some(Format::Txt),
+            "md" | "markdown" => Some(Format::Md),
             _ => None,
         }
     }
@@ -124,6 +131,7 @@ pub fn extract(path: &Path, format: Format) -> Result<Metadata> {
         Format::Epub => epub::extract(path),
         Format::Pdf => pdf::extract(path),
         Format::Mobi | Format::Azw3 => mobi::extract(path),
+        Format::Txt | Format::Md => text::extract(path),
     }
 }
 
@@ -221,11 +229,22 @@ mod tests {
     #[test]
     fn detect_rejects_unknown_extension() {
         let dir = tempdir().unwrap();
-        let p = dir.path().join("note.txt");
+        let p = dir.path().join("note.doc");
         fs::write(&p, b"hello").unwrap();
         let err = detect(&p).unwrap_err();
-        assert!(matches!(err, Error::Unsupported { ref ext, .. } if ext == "txt"));
-        assert!(format!("{err}").contains("supported: epub, pdf, mobi, azw3"));
+        assert!(matches!(err, Error::Unsupported { ref ext, .. } if ext == "doc"));
+        assert!(format!("{err}").contains("supported: epub, pdf, mobi, azw3, txt, md"));
+    }
+
+    #[test]
+    fn detect_accepts_txt_and_md() {
+        let dir = tempdir().unwrap();
+        let t = dir.path().join("plain.txt");
+        fs::write(&t, b"hi").unwrap();
+        assert_eq!(detect(&t).unwrap(), Format::Txt);
+        let m = dir.path().join("notes.md");
+        fs::write(&m, b"# title").unwrap();
+        assert_eq!(detect(&m).unwrap(), Format::Md);
     }
 
     #[test]

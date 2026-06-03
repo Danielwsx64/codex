@@ -45,6 +45,10 @@ pub enum Command {
     Search,
     Help,
     Quit,
+    /// Absolute page jump (1-indexed). Active only in the reader.
+    PageJump(usize),
+    /// Absolute chapter jump (1-indexed). Active only in the reader.
+    ChapterJump(usize),
 }
 
 pub enum PaletteAction {
@@ -92,8 +96,18 @@ pub fn parse(input: &str) -> Option<Command> {
         ":search" => Some(Command::Search),
         ":help" | ":h" => Some(Command::Help),
         ":quit" | ":q" => Some(Command::Quit),
-        _ => None,
+        _ => parse_jump(input),
     }
+}
+
+fn parse_jump(input: &str) -> Option<Command> {
+    let rest = input.strip_prefix(':')?;
+    if let Some(chapter) = rest.strip_prefix('c') {
+        let n: usize = chapter.parse().ok()?;
+        return Some(Command::ChapterJump(n));
+    }
+    let n: usize = rest.parse().ok()?;
+    Some(Command::PageJump(n))
 }
 
 fn complete(current: &str) -> Option<String> {
@@ -264,6 +278,25 @@ mod tests {
         let mut s = State::new();
         let action = handle_key(&mut s, key(KeyCode::Esc));
         assert!(matches!(action, PaletteAction::Close));
+    }
+
+    #[test]
+    fn parse_page_jump_numeric() {
+        assert_eq!(parse(":42"), Some(Command::PageJump(42)));
+        assert_eq!(parse(":1"), Some(Command::PageJump(1)));
+    }
+
+    #[test]
+    fn parse_chapter_jump_with_c_prefix() {
+        assert_eq!(parse(":c3"), Some(Command::ChapterJump(3)));
+        assert_eq!(parse(":c1"), Some(Command::ChapterJump(1)));
+    }
+
+    #[test]
+    fn parse_rejects_malformed_jumps() {
+        assert_eq!(parse(":c"), None);
+        assert_eq!(parse(":cabc"), None);
+        assert_eq!(parse(":42abc"), None);
     }
 
     #[test]

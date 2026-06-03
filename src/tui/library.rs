@@ -33,6 +33,10 @@ const TABLE_BINDINGS: &[Binding] = &[
         desc: "inspect book",
     },
     Binding {
+        keys: "o",
+        desc: "open book in reader",
+    },
+    Binding {
         keys: "e",
         desc: "edit metadata",
     },
@@ -384,6 +388,10 @@ pub enum LibraryAction {
     Back,
     OpenPalette,
     Status(StatusMessage),
+    OpenReader {
+        catalog_dir: PathBuf,
+        book: Box<Book>,
+    },
 }
 
 impl State {
@@ -464,6 +472,7 @@ pub fn handle_key(state: &mut State, key: KeyEvent) -> LibraryAction {
             LibraryAction::None
         }
         KeyCode::Char('i') => open_inspect(state),
+        KeyCode::Char('o') => open_reader_from_table(state),
         KeyCode::Char('e') => open_edit_from_table(state),
         KeyCode::Char('c') => open_columns(state),
         KeyCode::Char('w')
@@ -622,6 +631,19 @@ fn open_edit_from_table(state: &mut State) -> LibraryAction {
         edit::Origin::Table,
     ))));
     LibraryAction::None
+}
+
+fn open_reader_from_table(state: &mut State) -> LibraryAction {
+    let Some(ctx) = state.catalog.clone() else {
+        return LibraryAction::None;
+    };
+    let Some(book) = state.rows.get(state.cursor).cloned() else {
+        return LibraryAction::None;
+    };
+    LibraryAction::OpenReader {
+        catalog_dir: ctx.dir,
+        book: Box::new(book),
+    }
 }
 
 fn open_edit_from_inspect(state: &mut State) -> LibraryAction {
@@ -1908,12 +1930,14 @@ mod tests {
         fs::write(tmp.path().join("book.epub"), b"x").unwrap();
         fs::write(tmp.path().join("book.PDF"), b"x").unwrap();
         fs::write(tmp.path().join("note.txt"), b"x").unwrap();
+        fs::write(tmp.path().join("ignored.doc"), b"x").unwrap();
         fs::create_dir(tmp.path().join("subdir")).unwrap();
         let entries = read_tree(tmp.path()).unwrap();
         let names: Vec<String> = entries.iter().map(label).collect();
         assert!(names.iter().any(|n| n == "book.epub"));
         assert!(names.iter().any(|n| n == "book.PDF"));
-        assert!(!names.iter().any(|n| n == "note.txt"));
+        assert!(names.iter().any(|n| n == "note.txt"));
+        assert!(!names.iter().any(|n| n == "ignored.doc"));
         assert!(names.iter().any(|n| n == "subdir"));
         assert!(matches!(entries.first(), Some(TreeEntry::Parent)));
     }

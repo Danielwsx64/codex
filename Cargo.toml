@@ -20,12 +20,17 @@ anyhow = "1"
 clap = { version = "=4.5.20", features = ["derive"] }
 crossterm = "=0.28.1"
 directories = "5.0"
+# HTML → terminal text/styles for EPUB chapter rendering. html5ever-based.
+# Pinned to 0.15 (MSRV 1.72); 0.16+ requires Rust 1.85 (edition2024).
+html2text = { version = "0.15", default-features = false }
 # Pinned to keep MSRV 1.80 happy: indexmap >=2.10 requires edition2024.
 # Pulled transitively by `toml`; bumping MSRV would let this constraint relax.
 indexmap = "=2.7.0"
 # lopdf 0.34 is the last release on MSRV 1.80; >=0.35 pulls edition2024 deps.
 lopdf = "0.34"
 mobi = "0.8"
+# CommonMark parser for the TUI reader (Markdown source files).
+pulldown-cmark = { version = "0.13", default-features = false }
 quick-xml = "0.40"
 ratatui = "=0.28.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -41,6 +46,8 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tui-input = "0.10"
+# Word-boundary navigation (`w`/`b`/`e`) in the TUI reader.
+unicode-segmentation = "1.12"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]

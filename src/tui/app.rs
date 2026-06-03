@@ -14,6 +14,7 @@ use crate::tui::help;
 use crate::tui::library;
 use crate::tui::new_catalog;
 use crate::tui::palette;
+use crate::tui::reader;
 use crate::tui::too_small;
 use crate::tui::welcome;
 use crate::tui::widgets::{outer_block, render_default_footer, render_status, StatusMessage};
@@ -23,6 +24,7 @@ pub enum Screen {
     Catalogs(catalogs::State),
     NewCatalog(new_catalog::State),
     Library(library::State),
+    Reader(Box<reader::State>),
 }
 
 pub struct App {
@@ -157,6 +159,7 @@ impl App {
         match &self.screen {
             Screen::NewCatalog(s) => new_catalog::captures_text_input(s),
             Screen::Library(s) => library::captures_text_input(s),
+            Screen::Reader(s) => reader::captures_text_input(s),
             _ => false,
         }
     }
@@ -210,6 +213,22 @@ impl App {
             palette::Command::Help => {
                 self.help = Some(help::State);
             }
+            palette::Command::PageJump(n) => match &mut self.screen {
+                Screen::Reader(state) => reader::go_to_page(state, n),
+                _ => {
+                    self.status = Some(StatusMessage::error(
+                        "page jump (`:N`) is only available in the reader",
+                    ));
+                }
+            },
+            palette::Command::ChapterJump(n) => match &mut self.screen {
+                Screen::Reader(state) => reader::go_to_chapter(state, n),
+                _ => {
+                    self.status = Some(StatusMessage::error(
+                        "chapter jump (`:cN`) is only available in the reader",
+                    ));
+                }
+            },
         }
     }
 
@@ -246,6 +265,10 @@ impl App {
             Screen::Library(state) => {
                 let action = library::handle_key(state, key);
                 self.apply_library_action(action);
+            }
+            Screen::Reader(state) => {
+                let action = reader::handle_key(state, key);
+                self.apply_reader_action(action);
             }
         }
     }
@@ -300,6 +323,38 @@ impl App {
             library::LibraryAction::Status(s) => {
                 self.status = Some(s);
             }
+            library::LibraryAction::OpenReader { catalog_dir, book } => {
+                self.open_reader(catalog_dir, *book);
+            }
+        }
+    }
+
+    fn apply_reader_action(&mut self, action: reader::ReaderAction) {
+        match action {
+            reader::ReaderAction::None => {}
+            reader::ReaderAction::Back => {
+                self.screen = Screen::Library(library::State::load(&self.registry));
+            }
+            reader::ReaderAction::OpenPalette => {
+                self.palette = Some(palette::State::new());
+            }
+            reader::ReaderAction::Status(s) => {
+                self.status = Some(s);
+            }
+        }
+    }
+
+    fn open_reader(&mut self, catalog_dir: PathBuf, book: crate::catalog::books::Book) {
+        match reader::open_book(catalog_dir, &book, self.registry.reader) {
+            Ok(state) => {
+                self.screen = Screen::Reader(Box::new(state));
+            }
+            Err(err) => {
+                self.status = Some(StatusMessage::error(format!(
+                    "could not open `{}`: {err}",
+                    book.title
+                )));
+            }
         }
     }
 
@@ -340,11 +395,12 @@ impl App {
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(inner);
 
-        match &self.screen {
+        match &mut self.screen {
             Screen::Welcome(state) => welcome::render(frame, chunks[0], state),
             Screen::Catalogs(state) => catalogs::render(frame, chunks[0], state),
             Screen::NewCatalog(state) => new_catalog::render(frame, chunks[0], state),
             Screen::Library(state) => library::render(frame, chunks[0], state),
+            Screen::Reader(state) => reader::render(frame, chunks[0], state),
         }
 
         if self.help.is_some() {
@@ -373,6 +429,7 @@ impl App {
             Screen::Catalogs(state) => catalogs::help_sections(state),
             Screen::NewCatalog(state) => new_catalog::help_sections(state),
             Screen::Library(state) => library::help_sections(state),
+            Screen::Reader(state) => reader::help_sections(state),
         }
     }
 }
