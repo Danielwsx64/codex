@@ -26,12 +26,19 @@ html2text = { version = "0.15", default-features = false }
 # Pinned to keep MSRV 1.80 happy: indexmap >=2.10 requires edition2024.
 # Pulled transitively by `toml`; bumping MSRV would let this constraint relax.
 indexmap = "=2.7.0"
-# lopdf 0.34 is the last release on MSRV 1.80; >=0.35 pulls edition2024 deps.
-lopdf = "0.34"
+# Default features (chrono/jiff/rayon/time) pull edition2024 deps; the core
+# crate builds fine on MSRV 1.80 without them, and we only touch the Info dict.
+lopdf = { version = "0.36", default-features = false }
 mobi = "0.8"
+# Text extraction from PDF content streams for the TUI reader; lopdf alone
+# only reads document structure/metadata, not glyph runs.
+pdf-extract = "0.9"
 # CommonMark parser for the TUI reader (Markdown source files).
 pulldown-cmark = { version = "0.13", default-features = false }
 quick-xml = "0.40"
+# Pinned to keep MSRV 1.80 happy: rangemap >=1.6 requires rustc 1.81.
+# Pulled transitively by `lopdf`; bumping MSRV would let this constraint relax.
+rangemap = "=1.5.1"
 ratatui = "=0.28.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 rusqlite_migration = "1.3"

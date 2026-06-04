@@ -247,16 +247,22 @@ Sub-formatos validados (limitações do crate `mobi` 0.8):
 
 PDF é layout-fixo, fundamentalmente hostil ao reflow do terminal.
 
-- [ ] Reader para PDF single-column via `pdf-extract` (texto sequencial
+- [x] Reader para PDF single-column via `pdf-extract` (texto sequencial
       reaproveitado pelo `layout::lay_out`). Aceitável para a maioria
-      de livros de ficção exportados em PDF.
-- [ ] Heurística para detectar multi-coluna (gaps verticais em colunas
+      de livros de ficção exportados em PDF. Cada página do PDF vira um
+      capítulo ("Page N"), então `:cN` salta pela página real do
+      documento. PDF criptografado é recusado com mensagem clara.
+- [x] Heurística para detectar multi-coluna (gaps verticais em colunas
       separadas) — em texto multi-coluna o `pdf-extract` mistura linhas
       entre colunas. Sinalizar como "best-effort: layout não preservado"
-      e seguir mesmo assim, ou pedir conversão para EPUB.
-- [ ] Tabelas, fórmulas matemáticas, imagens vetoriais — ficam
-      degradadas. Documentar como limitação.
-- [ ] **Não usar `pdfium-render`**: exige runtime Pdfium em C++, o que
+      e seguir mesmo assim, ou pedir conversão para EPUB. Implementado o
+      ramo "seguir mesmo assim": linha de aviso em itálico no topo de
+      cada página afetada.
+- [x] Tabelas, fórmulas matemáticas, imagens vetoriais — ficam
+      degradadas. Documentar como limitação. Documentado no próprio
+      leitor: o aviso best-effort e as mensagens de erro (criptografado,
+      sem texto extraível) carregam a limitação até o usuário.
+- [x] **Não usar `pdfium-render`**: exige runtime Pdfium em C++, o que
       quebra a portabilidade "binário único" do cdx. `lopdf` (já dep)
       é só para metadados; para texto, `pdf-extract` é o caminho.
 

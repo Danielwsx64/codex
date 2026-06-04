@@ -7,6 +7,7 @@ pub mod layout;
 pub mod style;
 
 mod mobi;
+mod pdf;
 
 use crate::catalog::books::Book as CatalogBook;
 use crate::epub;
@@ -51,6 +52,22 @@ pub enum Error {
     MobiPanic { path: PathBuf },
     #[error("book file `{}` produced no readable text", .path.display())]
     EmptyContent { path: PathBuf },
+    #[error("book file `{}` is encrypted; cdx does not handle PDF passwords or DRM", .path.display())]
+    PdfEncrypted { path: PathBuf },
+    #[error("failed to read pdf structure of `{}`: {source}", .path.display())]
+    PdfStructure {
+        path: PathBuf,
+        #[source]
+        source: lopdf::Error,
+    },
+    #[error("failed to extract text from pdf `{}`: {source}", .path.display())]
+    Pdf {
+        path: PathBuf,
+        #[source]
+        source: pdf_extract::OutputError,
+    },
+    #[error("pdf text extractor crashed reading `{}`; the file is likely malformed", .path.display())]
+    PdfPanic { path: PathBuf },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -114,9 +131,9 @@ fn read_chapters(path: &Path, format: Format, render_width: usize) -> Result<Vec
         Format::Txt => read_txt(path),
         Format::Md => read_md(path),
         Format::Mobi | Format::Azw3 => mobi::read_mobi(path, render_width),
-        Format::Pdf => Err(Error::UnsupportedFormat {
-            format: format.label().to_string(),
-        }),
+        // render_width only tunes html2text output; pdf text arrives already
+        // line-broken and the TUI lay_out reflows it to the viewport.
+        Format::Pdf => pdf::read_pdf(path),
     }
 }
 
@@ -597,15 +614,15 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_format_errors_out() {
+    fn truncated_pdf_errors_out() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("doc.pdf");
         std::fs::write(&path, b"%PDF-").unwrap();
         let err = read_chapters(&path, Format::Pdf, 80).unwrap_err();
-        match err {
-            Error::UnsupportedFormat { format } => assert_eq!(format, "pdf"),
-            other => panic!("expected UnsupportedFormat, got {other:?}"),
-        }
+        assert!(matches!(
+            err,
+            Error::PdfStructure { .. } | Error::Pdf { .. }
+        ));
     }
 
     #[test]

@@ -98,13 +98,15 @@ fn tui_reader_state_persists_and_restores_progress() {
 }
 
 #[test]
-fn reader_open_rejects_unsupported_format() {
+fn reader_open_rejects_unknown_format() {
     let (_tmp, dir) = make_catalog();
+    // Every catalog format now opens in the reader; an unknown format label
+    // (e.g. a row written by a future cdx) is what UnsupportedFormat guards.
     let sample = common::Fixture::fixture("sample.pdf");
-    let book = seed_book_at(&dir, &sample, "pdf");
+    let book = seed_book_at(&dir, &sample, "djvu");
     let err = reader::open(&dir, &book, 80).unwrap_err();
     match err {
-        reader::Error::UnsupportedFormat { format } => assert_eq!(format, "pdf"),
+        reader::Error::UnsupportedFormat { format } => assert_eq!(format, "djvu"),
         other => panic!("expected UnsupportedFormat, got {other:?}"),
     }
 }

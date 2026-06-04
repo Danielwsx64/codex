@@ -19,7 +19,10 @@ pub fn write(path: &Path, book: &Book) -> Result<()> {
     let Object::Dictionary(info_dict) = info else {
         return Err(Error::Pdf {
             path: path.to_path_buf(),
-            source: lopdf::Error::Type,
+            source: lopdf::Error::ObjectType {
+                expected: "Dictionary",
+                found: "non-dictionary object",
+            },
         });
     };
 
