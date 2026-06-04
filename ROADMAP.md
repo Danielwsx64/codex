@@ -266,6 +266,21 @@ PDF é layout-fixo, fundamentalmente hostil ao reflow do terminal.
       quebra a portabilidade "binário único" do cdx. `lopdf` (já dep)
       é só para metadados; para texto, `pdf-extract` é o caminho.
 
+## v0.8.3 — Leitor: cache de conversão e abertura assíncrona
+
+A conversão (PDF principalmente) é cara; reabrir um livro não deve
+pagar esse custo de novo, nem congelar a TUI na primeira vez.
+
+- [x] Cache em disco do resultado da conversão (PDF/EPUB/MOBI/AZW3)
+      no XDG cache dir (`~/.cache/cdx/<hash-do-catálogo>/<id>.json`);
+      invalidação por mtime + tamanho do arquivo fonte + versão de
+      schema. Falha de cache nunca quebra a abertura — fallback
+      silencioso para a conversão. TXT/MD ficam de fora (parse é tão
+      rápido quanto ler o cache).
+- [x] Conversão roda em thread de fundo com tela de loading animada
+      ("Opening <título>…"); a TUI continua responsiva e `Esc`
+      cancela a abertura voltando pra biblioteca.
+
 ## v0.9 — Anotações e marcações
 
 Highlights, notas e bookmarks como dado de primeira classe no

@@ -40,6 +40,7 @@ fn seed_book_at(catalog_dir: &std::path::Path, src: &std::path::Path, format: &s
 }
 
 fn make_catalog() -> (tempfile::TempDir, PathBuf) {
+    common::isolate_reader_cache();
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("lib");
     let _ = codex::catalog::init(&dir).expect("init catalog");
@@ -63,6 +64,34 @@ fn open_sample_pdf_via_reader_domain_returns_page_chapters() {
     assert!(loaded.chapters[1]
         .text
         .contains("Second page with more text."));
+}
+
+#[test]
+fn reopen_hits_the_conversion_cache() {
+    let (_tmp, dir) = make_catalog();
+    let sample = common::Fixture::fixture("sample_text.pdf");
+    let book = seed_book_at(&dir, &sample, "pdf");
+    let abs = dir.join(&book.file_path);
+
+    let first = reader::open(&dir, &book, tui_reader::HTML_RENDER_WIDTH).expect("first open");
+
+    // Replace the source with same-size garbage and restore its mtime: a
+    // re-conversion would now fail (not a PDF anymore), so a successful and
+    // identical second open proves the chapters came from the cache.
+    let meta = std::fs::metadata(&abs).unwrap();
+    let mtime = meta.modified().unwrap();
+    std::fs::write(&abs, vec![b'!'; meta.len() as usize]).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&abs)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(mtime))
+        .unwrap();
+
+    let second = reader::open(&dir, &book, tui_reader::HTML_RENDER_WIDTH).expect("second open");
+    assert_eq!(first.chapters.len(), second.chapters.len());
+    assert_eq!(first.chapters[0].text, second.chapters[0].text);
+    assert_eq!(first.chapters[1].text, second.chapters[1].text);
 }
 
 #[test]

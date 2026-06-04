@@ -41,6 +41,7 @@ fn seed_book_at(catalog_dir: &std::path::Path, src: &std::path::Path, format: &s
 }
 
 fn make_catalog() -> (tempfile::TempDir, PathBuf) {
+    common::isolate_reader_cache();
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("lib");
     let _ = codex::catalog::init(&dir).expect("init catalog");

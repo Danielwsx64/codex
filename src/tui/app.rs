@@ -12,6 +12,7 @@ use crate::tui::catalogs;
 use crate::tui::confirm;
 use crate::tui::help;
 use crate::tui::library;
+use crate::tui::loading;
 use crate::tui::new_catalog;
 use crate::tui::palette;
 use crate::tui::reader;
@@ -24,6 +25,7 @@ pub enum Screen {
     Catalogs(catalogs::State),
     NewCatalog(new_catalog::State),
     Library(library::State),
+    Loading(Box<loading::State>),
     Reader(Box<reader::State>),
 }
 
@@ -65,7 +67,10 @@ impl App {
         while !self.should_quit {
             terminal.draw(|f| self.render(f))?;
             if self.has_pending_work() {
-                if event::poll(Duration::from_millis(0))? {
+                // 100ms keeps the loading spinner animating (~10fps) and key
+                // input responsive without busy-spinning a core while a
+                // conversion worker runs for seconds.
+                if event::poll(Duration::from_millis(100))? {
                     let event = event::read()?;
                     self.dispatch(event)?;
                 } else {
@@ -80,12 +85,21 @@ impl App {
     }
 
     fn has_pending_work(&self) -> bool {
-        matches!(&self.screen, Screen::Library(s) if library::has_pending_embed_job(s))
+        match &self.screen {
+            Screen::Library(s) => library::has_pending_embed_job(s),
+            Screen::Loading(_) => true,
+            _ => false,
+        }
     }
 
     fn advance_work(&mut self) {
-        if let Screen::Library(s) = &mut self.screen {
-            library::advance_embed_job(s);
+        match &mut self.screen {
+            Screen::Library(s) => library::advance_embed_job(s),
+            Screen::Loading(s) => {
+                let action = loading::advance(s);
+                self.apply_loading_action(action);
+            }
+            _ => {}
         }
     }
 
@@ -292,6 +306,10 @@ impl App {
                 let action = library::handle_key(state, key);
                 self.apply_library_action(action);
             }
+            Screen::Loading(state) => {
+                let action = loading::handle_key(state, key);
+                self.apply_loading_action(action);
+            }
             Screen::Reader(state) => {
                 let action = reader::handle_key(state, key);
                 self.apply_reader_action(action);
@@ -371,15 +389,24 @@ impl App {
     }
 
     fn open_reader(&mut self, catalog_dir: PathBuf, book: crate::catalog::books::Book) {
-        match reader::open_book(catalog_dir, &book, self.registry.reader) {
-            Ok(state) => {
-                self.screen = Screen::Reader(Box::new(state));
+        // Conversion can take seconds (PDF); it runs on a worker thread while
+        // the Loading screen animates and `advance_work` polls for the result.
+        let state = loading::spawn(catalog_dir, book, self.registry.reader);
+        self.screen = Screen::Loading(Box::new(state));
+    }
+
+    fn apply_loading_action(&mut self, action: loading::LoadingAction) {
+        match action {
+            loading::LoadingAction::None => {}
+            loading::LoadingAction::Ready(state) => {
+                self.screen = Screen::Reader(state);
             }
-            Err(err) => {
-                self.status = Some(StatusMessage::error(format!(
-                    "could not open `{}`: {err}",
-                    book.title
-                )));
+            loading::LoadingAction::Cancelled => {
+                self.screen = Screen::Library(library::State::load(&self.registry));
+            }
+            loading::LoadingAction::Failed(msg) => {
+                self.screen = Screen::Library(library::State::load(&self.registry));
+                self.status = Some(StatusMessage::error(msg));
             }
         }
     }
@@ -426,6 +453,7 @@ impl App {
             Screen::Catalogs(state) => catalogs::render(frame, chunks[0], state),
             Screen::NewCatalog(state) => new_catalog::render(frame, chunks[0], state),
             Screen::Library(state) => library::render(frame, chunks[0], state),
+            Screen::Loading(state) => loading::render(frame, chunks[0], state),
             Screen::Reader(state) => reader::render(frame, chunks[0], state),
         }
 
@@ -455,6 +483,7 @@ impl App {
             Screen::Catalogs(state) => catalogs::help_sections(state),
             Screen::NewCatalog(state) => new_catalog::help_sections(state),
             Screen::Library(state) => library::help_sections(state),
+            Screen::Loading(state) => loading::help_sections(state),
             Screen::Reader(state) => reader::help_sections(state),
         }
     }
@@ -662,6 +691,87 @@ mod tests {
         // the test. Tests are short-lived; the OS reclaims on process exit.
         let _ = Box::leak(Box::new(dir));
         App::new(cfg).unwrap()
+    }
+
+    fn sample_book() -> crate::catalog::books::Book {
+        crate::catalog::books::Book {
+            id: 1,
+            title: "Dune".to_string(),
+            author: None,
+            format: "epub".to_string(),
+            file_path: "books/1/dune.epub".to_string(),
+            added_at: "2024-01-01".to_string(),
+            description: None,
+            series_name: None,
+            series_index: None,
+            rating: None,
+            isbn: None,
+            publisher: None,
+            language: None,
+            published_date: None,
+            tags: vec![],
+            embed_status: crate::catalog::books::EmbedStatus::Pending,
+            embed_synced_at: None,
+        }
+    }
+
+    #[test]
+    fn open_reader_transitions_to_loading() {
+        let mut app = fresh_app();
+        app.open_reader(
+            PathBuf::from("/tmp/cdx-test-missing-catalog"),
+            sample_book(),
+        );
+        assert!(matches!(app.screen, Screen::Loading(_)));
+        assert!(
+            app.has_pending_work(),
+            "the loading screen must keep the event loop polling"
+        );
+    }
+
+    #[test]
+    fn loading_esc_cancels_back_to_library() {
+        let mut app = fresh_app();
+        app.open_reader(
+            PathBuf::from("/tmp/cdx-test-missing-catalog"),
+            sample_book(),
+        );
+        app.dispatch(Event::Key(key(KeyCode::Esc))).unwrap();
+        assert!(matches!(app.screen, Screen::Library(_)));
+    }
+
+    #[test]
+    fn loading_q_opens_quit_confirmation() {
+        let mut app = fresh_app();
+        app.open_reader(
+            PathBuf::from("/tmp/cdx-test-missing-catalog"),
+            sample_book(),
+        );
+        app.dispatch(Event::Key(key(KeyCode::Char('q')))).unwrap();
+        assert!(!app.should_quit, "q must open the guard, not quit");
+        assert!(app.confirm.is_some());
+        assert!(matches!(app.screen, Screen::Loading(_)));
+    }
+
+    #[test]
+    fn loading_failure_returns_to_library_with_status() {
+        let mut app = fresh_app();
+        // The catalog dir doesn't exist, so the worker fails fast; poll until
+        // the result lands.
+        app.open_reader(
+            PathBuf::from("/tmp/cdx-test-missing-catalog"),
+            sample_book(),
+        );
+        for _ in 0..100 {
+            if !matches!(app.screen, Screen::Loading(_)) {
+                break;
+            }
+            app.advance_work();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(matches!(app.screen, Screen::Library(_)));
+        let status = app.status.as_ref().expect("a failed open sets a status");
+        assert!(status.text.contains("Dune"));
     }
 
     #[test]

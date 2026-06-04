@@ -1,11 +1,13 @@
 use std::path::{Path, PathBuf};
 
 use html2text::render::{RichAnnotation, TaggedLine, TaggedLineElement};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod layout;
 pub mod style;
 
+mod cache;
 mod mobi;
 mod pdf;
 
@@ -80,7 +82,10 @@ pub struct Book {
     pub chapters: Vec<Chapter>,
 }
 
-#[derive(Debug, Clone)]
+// serde derives exist because chapters cross the reader-cache file boundary
+// (`reader::cache`); `Book` itself stays out of the cache so catalog metadata
+// edits (title/author) never go stale on a cache hit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chapter {
     pub title: String,
     /// Plain-text view of the chapter (no styles), used as the cursor's
@@ -116,7 +121,19 @@ pub fn open(catalog_dir: &Path, book: &CatalogBook, render_width: usize) -> Resu
         format: book.format.clone(),
     })?;
     let abs_path = catalog_dir.join(&book.file_path);
-    let chapters = read_chapters(&abs_path, format, render_width)?;
+    let chapters = match cache::is_cacheable(format)
+        .then(|| cache::load(catalog_dir, book.id, &abs_path, render_width))
+        .flatten()
+    {
+        Some(chapters) => chapters,
+        None => {
+            let chapters = read_chapters(&abs_path, format, render_width)?;
+            if cache::is_cacheable(format) {
+                cache::store(catalog_dir, book.id, &abs_path, render_width, &chapters);
+            }
+            chapters
+        }
+    };
     Ok(Book {
         id: book.id,
         title: book.title.clone(),

@@ -4,9 +4,19 @@
 #![allow(dead_code)]
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use assert_cmd::Command;
 use tempfile::TempDir;
+
+// Each tests/*.rs binary is its own process; point the reader cache at one
+// process-lived tempdir so in-process `reader::open` calls never write to the
+// user's real XDG cache. Idempotent — concurrent tests set the same value.
+pub fn isolate_reader_cache() {
+    static CACHE_DIR: OnceLock<TempDir> = OnceLock::new();
+    let dir = CACHE_DIR.get_or_init(|| tempfile::tempdir().expect("create cache tempdir"));
+    std::env::set_var("CDX_CACHE_DIR", dir.path());
+}
 
 pub struct Fixture {
     pub cfg_dir: TempDir,

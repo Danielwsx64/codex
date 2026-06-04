@@ -18,6 +18,7 @@ pub mod catalogs;
 pub mod confirm;
 pub mod help;
 pub mod library;
+pub mod loading;
 pub mod new_catalog;
 pub mod palette;
 pub mod reader;

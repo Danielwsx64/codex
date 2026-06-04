@@ -1,6 +1,11 @@
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+// serde derives exist because styled content crosses the reader-cache file
+// boundary (`reader::cache`), not for any API surface.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TextStyle {
     pub bold: bool,
     pub italic: bool,
@@ -34,7 +39,7 @@ impl TextStyle {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StyledSpan {
     pub text: String,
     pub style: TextStyle,
@@ -60,7 +65,7 @@ impl StyledSpan {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct StyledLine {
     pub spans: Vec<StyledSpan>,
 }
