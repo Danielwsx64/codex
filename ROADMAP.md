@@ -29,8 +29,8 @@ Cada seção corresponde a um conjunto coerente de verbos CLI:
 2. **Search** — busca full-text + filtros (`cdx search`) [v0.3]
 3. **Catalogs** — registry de catálogos (`cdx catalog ls`/`use`/
    `rm` + wizard de `init`/`add`) [v0.1]
-4. **Devices** — sync com ereaders (`cdx device ls`, `push`, `pull`,
-   `sync`) [v0.4]
+4. **Devices** — sync com ereaders (`cdx device ls`, `device books`,
+   `device alias`, `push`, `pull`, `sync`) [v0.4]
 
 Seções de milestones futuros aparecem na lista com sufixo
 "(v0.X)" e ficam desabilitadas (Enter sobre elas não navega) até
@@ -152,11 +152,79 @@ Ciclo de embed: qualquer edit (`cdx edit` ou TUI `e`) marca o livro como
 
 ## v0.4 — Kindle sync (USB)
 
-- [ ] Detectar Kindle montado (heurística por `system.bin` / vendor id)
-- [ ] `cdx device ls` — lista livros no device
-- [ ] `cdx push <id>` — copia arquivo do catálogo pro Kindle
-- [ ] `cdx pull <path>` — importa livro do Kindle pro catálogo
-- [ ] `cdx sync` — diff bidirecional com confirmação
+Sync com ereaders montados via USB, com suporte a múltiplos devices
+simultâneos. Cada device é identificado pelo serial estável (lido do
+descritor USB via sysfs) e pode ganhar um **apelido** — é o apelido
+que os comandos usam no dia a dia.
+
+A identidade de um livro entre catálogo e device tem duas camadas:
+
+1. **Exata** — a tabela de sync state (`device_books`) registra cada
+   livro que o cdx enviou/trouxe (book_id ↔ path no device + checksum
+   SHA-256 + tamanho/mtime). Pra esses, não há adivinhação.
+2. **Por metadado** — pra arquivos que chegaram no device por fora,
+   o match é **título + autor normalizados** (casefold, NFKD sem
+   diacríticos, pontuação e whitespace colapsados), nunca o arquivo:
+   o formato pode variar entre as pontas (EPUB local vs AZW3 no
+   device) e hash não sobrevive a conversão. Variações pequenas
+   ("Café" vs "Cafe") casam; sem fuzzy matching — ambiguidade real
+   (dois candidatos pro mesmo match) nunca se resolve sozinha, vira
+   conflito pra decisão manual.
+
+- [x] Detectar Kindles montados via USB mass storage (Linux), com
+      suporte a múltiplos devices simultâneos; a identidade estável de
+      cada device é o **serial** lido do descritor USB em sysfs
+      (`idVendor` 1949 = Amazon/Lab126 é o gate; `documents/` +
+      `system/` no mount são só sanity check). Em outros SOs a
+      detecção compila e retorna lista vazia
+- [x] Migration `0007_devices.sql` — tabela `devices` (`serial` PK,
+      `alias`, `last_seen_at`) + tabela `device_books` (sync state:
+      `device_serial`, `book_id`, `device_path`, `hash`, `size`,
+      `mtime`, `synced_at`); devices vivem no catalog.db, então o
+      apelido é por catálogo
+- [ ] `cdx device ls` — lista os devices detectados e os conhecidos
+      (alias, serial, mount path quando conectado, espaço livre,
+      contagem de livros); humano + JSONL
+- [ ] `cdx device alias <serial|alias> <new-alias>` — define/renomeia
+      o apelido; na primeira detecção de um device sem apelido o
+      serial é usado como fallback nas listagens
+- [ ] `cdx device books [--device <alias>]` — lista livros do device
+      lendo metadados dos arquivos (não só filename), com a coluna de
+      presença ("both" / "device only") via sync state + match
+      normalizado; humano + JSONL
+- [ ] Seleção de device: flag `--device <alias>` em `device books`,
+      `push`, `pull` e `sync`. Um device conectado → default
+      implícito; dois ou mais sem o flag → erro claro listando os
+      candidatos (nunca escolher sozinho)
+- [ ] `cdx push <id|título> [--device <alias>]` — copia arquivo do
+      catálogo pro device e grava o sync state (hash/size/mtime)
+- [ ] `cdx pull <path> [--device <alias>]` — importa livro do device
+      reusando o pipeline do `cdx add` (incluindo dedup por hash) e
+      grava o sync state
+- [ ] Verificação de sync: o diff confere cada entrada do sync state
+      pelo fast-path tamanho + mtime; divergência marca o livro como
+      `modified` (re-push é oferecido no plano). `--verify` força
+      SHA-256 completo (USB é lento — full hash só sob demanda).
+      Entrada cujo arquivo sumiu do device vira `missing`
+- [ ] `cdx sync [--device <alias>]` — diff bidirecional **iterativo**:
+      computa o plano (faltantes em cada ponta, `modified`, `missing`,
+      conflitos de match) e confirma item a item, estilo `git add -p`
+      (`y` aplica / `n` pula / `a` aceita o resto / `q` aborta).
+      `--dry-run` só imprime o plano; `--yes` aceita tudo (pra
+      script). Sync **nunca apaga** em nenhuma ponta — só copia;
+      remoção é sempre manual
+- [ ] TUI: tela "Devices" — lista devices (alias, conectado ou não);
+      `r` renomeia o apelido; Enter abre a visão de livros do device
+      selecionado (a navegação resolve a escolha de device sem flag)
+- [ ] TUI: indicadores de presença na visão do device e na Library
+      (quando há device conectado): cada linha marca "both" /
+      "local only" / "device only" / "modified" via sync state +
+      match normalizado, exibindo o formato de cada ponta quando
+      difere
+- [ ] TUI: fluxo de sync espelhando o CLI iterativo — o plano vira
+      lista com checkbox por item (Space marca/desmarca, `a` tudo),
+      conflitos destacados exigem escolha explícita, Enter aplica só
+      o que está marcado, progresso linha a linha
 - [ ] TUI: registrar `:devices` no command palette + ativar link
       "Devices" na welcome
 
@@ -287,7 +355,7 @@ Highlights, notas e bookmarks como dado de primeira classe no
 catálogo: importados do Kindle e/ou criados no leitor da TUI. Retoma
 a seleção visual (`v`) e os bookmarks que a v0.8 deixou em defer.
 
-- [ ] Migration `0007_annotations.sql` — tabela `annotations`
+- [ ] Migration `0008_annotations.sql` — tabela `annotations`
       (`book_id`, `kind` highlight|note|bookmark, `chapter`, `offset`,
       `text` trecho marcado, `note` comentário opcional, `source`
       kindle|cdx, `created_at`); índice por `book_id`.

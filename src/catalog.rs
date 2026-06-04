@@ -6,6 +6,7 @@ use thiserror::Error;
 
 pub mod books;
 pub mod columns;
+pub mod devices;
 pub mod handlers;
 pub mod render;
 pub mod schema;

@@ -4,6 +4,7 @@
 pub mod catalog;
 pub mod cli;
 pub mod config;
+pub mod device;
 pub mod embed;
 pub mod epub;
 pub mod fingerprint;
