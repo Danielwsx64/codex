@@ -66,6 +66,10 @@ const TABLE_BINDINGS: &[Binding] = &[
         desc: "push selected book to device",
     },
     Binding {
+        keys: "s",
+        desc: "sync with current device",
+    },
+    Binding {
         keys: "/",
         desc: "quick filter (Esc clears when filtered)",
     },
@@ -469,6 +473,9 @@ pub enum LibraryAction {
         catalog_dir: PathBuf,
         book: Box<Book>,
     },
+    // Sync is device-wide, not book-specific: hand off to the Devices screen,
+    // which resolves the current device and renders the sync plan.
+    OpenDeviceSync,
 }
 
 impl State {
@@ -567,6 +574,7 @@ pub fn handle_key(state: &mut State, key: KeyEvent) -> LibraryAction {
         }
         KeyCode::Char('a') => open_add_tree(state),
         KeyCode::Char('p') => open_confirm_push(state),
+        KeyCode::Char('s') => LibraryAction::OpenDeviceSync,
         KeyCode::Char('d') | KeyCode::Delete => open_confirm_rm(state),
         KeyCode::Char('/') => open_filter_input(state),
         KeyCode::Esc => {
@@ -2645,6 +2653,14 @@ mod tests {
         let mut state = State::load(&reg);
         handle_key(&mut state, key(KeyCode::Char('c')));
         assert!(matches!(state.overlay, Some(Overlay::Columns(_))));
+    }
+
+    #[test]
+    fn s_requests_device_sync() {
+        let (_tmp, _cat, reg) = setup_with_catalog();
+        let mut state = State::load(&reg);
+        let action = handle_key(&mut state, key(KeyCode::Char('s')));
+        assert!(matches!(action, LibraryAction::OpenDeviceSync));
     }
 
     #[test]

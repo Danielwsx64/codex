@@ -15,6 +15,7 @@ pub mod presence;
 pub mod pull;
 pub mod push;
 pub mod sync;
+pub mod sync_job;
 pub mod sysfs;
 
 pub const AMAZON_VENDOR_ID: &str = "1949";

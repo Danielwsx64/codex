@@ -243,7 +243,7 @@ A identidade de um livro entre catálogo e device tem duas camadas:
       "local only" / "device only" / "modified" via sync state +
       match normalizado, exibindo o formato de cada ponta quando
       difere
-- [ ] TUI: fluxo de sync espelhando o CLI iterativo — o plano vira
+- [x] TUI: fluxo de sync espelhando o CLI iterativo — o plano vira
       lista com checkbox por item (Space marca/desmarca, `a` tudo),
       conflitos destacados exigem escolha explícita, Enter aplica só
       o que está marcado, progresso linha a linha

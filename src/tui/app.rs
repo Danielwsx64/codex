@@ -89,6 +89,7 @@ impl App {
     fn has_pending_work(&self) -> bool {
         match &self.screen {
             Screen::Library(s) => library::has_pending_embed_job(s),
+            Screen::Devices(s) => devices::has_pending_sync(s),
             Screen::Loading(_) => true,
             _ => false,
         }
@@ -97,6 +98,7 @@ impl App {
     fn advance_work(&mut self) {
         match &mut self.screen {
             Screen::Library(s) => library::advance_embed_job(s),
+            Screen::Devices(s) => devices::advance_sync(s),
             Screen::Loading(s) => {
                 let action = loading::advance(s);
                 self.apply_loading_action(action);
@@ -396,6 +398,21 @@ impl App {
             }
             library::LibraryAction::OpenReader { catalog_dir, book } => {
                 self.open_reader(catalog_dir, *book);
+            }
+            library::LibraryAction::OpenDeviceSync => {
+                // Resolve the current device and open its plan on a fresh Devices
+                // screen. `None` means a sync view opened (navigate there); a Status
+                // means no/ambiguous device or already in sync (stay on Library).
+                let mut state = devices::State::load(&self.registry);
+                match devices::open_sync_current(&mut state) {
+                    devices::DevicesAction::None => {
+                        self.screen = Screen::Devices(state);
+                    }
+                    devices::DevicesAction::Status(s) => {
+                        self.status = Some(s);
+                    }
+                    _ => {}
+                }
             }
         }
     }
