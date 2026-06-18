@@ -188,7 +188,7 @@ A identidade de um livro entre catálogo e device tem duas camadas:
 - [x] `cdx device alias <serial|alias> <new-alias>` — define/renomeia
       o apelido; na primeira detecção de um device sem apelido o
       serial é usado como fallback nas listagens
-- [ ] `cdx device books [--device <alias>]` — lista livros do device
+- [x] `cdx device books [--device <alias>]` — lista livros do device
       lendo metadados dos arquivos (não só filename), com a coluna de
       presença ("both" / "device only") via sync state + match
       normalizado; humano + JSONL

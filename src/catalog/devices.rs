@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use rusqlite::{params, Connection, OptionalExtension};
 
 #[derive(Debug, thiserror::Error)]
@@ -48,6 +51,20 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<KnownDevice>> {
             alias: row.get(1)?,
             last_seen_at: row.get(2)?,
         })
+    })?;
+    rows.collect()
+}
+
+// The exact (no-guessing) layer of device↔catalog identity: every file cdx has
+// itself synced to this device, keyed by its on-device path. `cdx device books`
+// trusts these over metadata matching.
+pub fn synced_paths(conn: &Connection, serial: &str) -> rusqlite::Result<HashMap<PathBuf, i64>> {
+    let mut stmt = conn
+        .prepare_cached("SELECT device_path, book_id FROM device_books WHERE device_serial = ?1")?;
+    let rows = stmt.query_map(params![serial], |row| {
+        let path: String = row.get(0)?;
+        let book_id: i64 = row.get(1)?;
+        Ok((PathBuf::from(path), book_id))
     })?;
     rows.collect()
 }
@@ -318,5 +335,29 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM device_books", [], |r| r.get(0))
             .unwrap();
         assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn synced_paths_returns_path_to_book_map_for_serial() {
+        let (_dir, conn) = open_fresh();
+        record_seen(&conn, "AAA").unwrap();
+        record_seen(&conn, "BBB").unwrap();
+        conn.execute(
+            "INSERT INTO books (title, author, format, file_path) VALUES ('B', 'A', 'epub', '')",
+            [],
+        )
+        .unwrap();
+        let book_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO device_books (device_serial, book_id, device_path, hash, size, mtime)
+             VALUES ('AAA', ?1, 'documents/B.epub', 'abc', 10, 1700000000)",
+            params![book_id],
+        )
+        .unwrap();
+
+        let map = synced_paths(&conn, "AAA").unwrap();
+        assert_eq!(map.get(&PathBuf::from("documents/B.epub")), Some(&book_id));
+        // A different serial sees none of AAA's rows.
+        assert!(synced_paths(&conn, "BBB").unwrap().is_empty());
     }
 }

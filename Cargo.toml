@@ -57,6 +57,9 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tui-input = "0.10"
+# NFKD normalization for device↔catalog title/author matching ("Café" == "Cafe");
+# stdlib has no Unicode normalization. MSRV-1.80 safe.
+unicode-normalization = "0.1"
 # Word-boundary navigation (`w`/`b`/`e`) in the TUI reader.
 unicode-segmentation = "1.12"
 zip = { version = "2", default-features = false, features = ["deflate"] }

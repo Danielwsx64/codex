@@ -9,6 +9,7 @@ pub mod embed;
 pub mod epub;
 pub mod fingerprint;
 pub mod import;
+pub mod matching;
 pub mod reader;
 pub mod tui;
 pub mod welcome;

@@ -18,7 +18,40 @@ pub fn dispatch(
         DeviceCmd::Alias { target, new_alias } => {
             dispatch_alias(&target, &new_alias, data_dir, catalog_override, json)
         }
+        DeviceCmd::Books { device } => {
+            dispatch_books(device.as_deref(), data_dir, catalog_override, json)
+        }
     }
+}
+
+fn dispatch_books(
+    device: Option<&str>,
+    data_dir: Option<&Path>,
+    catalog_override: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let registry = load(data_dir)?;
+    let entry = resolve_entry(&registry, catalog_override)?.clone();
+    let conn = catalog::open_existing(&entry.path)
+        .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
+
+    let detected = device::detect();
+    // Mirror `ls`: persist every detected device so aliases/last_seen stay fresh.
+    for found in &detected {
+        devices::record_seen(&conn, &found.serial)
+            .with_context(|| format!("while recording device `{}`", found.serial))?;
+    }
+
+    let target = device::resolve_target(&conn, &detected, device)?;
+    let books = device::books::list(&conn, &target.serial, &target.mount_path)
+        .with_context(|| format!("while listing books on device `{}`", target.serial))?;
+
+    render::emit(
+        json,
+        |w| render::render_device_books_human(&books, w),
+        |w| render::render_device_books_jsonl(&books, w),
+    )?;
+    Ok(())
 }
 
 fn dispatch_alias(

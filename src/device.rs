@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 
+use rusqlite::Connection;
 use thiserror::Error;
 
-use crate::catalog::devices::KnownDevice;
+use crate::catalog::devices::{self, KnownDevice};
 use crate::import::Format;
 
+pub mod books;
 pub mod markers;
 pub mod mounts;
 pub mod sysfs;
@@ -36,10 +38,71 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+// Resolving which device a command acts on. Selection never guesses: with no
+// `--device` flag a single connected device is the implicit default, but zero
+// or several is an explicit error the caller must surface.
+#[derive(Debug, Error)]
+pub enum SelectError {
+    #[error("no device connected; connect a Kindle over USB")]
+    NoneConnected,
+    #[error("device `{target}` is known but not currently connected")]
+    NotConnected { target: String },
+    #[error("multiple devices connected; pass --device <alias>:\n{candidates}")]
+    Ambiguous { candidates: String },
+    #[error(transparent)]
+    Lookup(#[from] devices::Error),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedDevice {
     pub serial: String,
     pub mount_path: PathBuf,
+}
+
+// Pick the device a command targets from the live `detected` set. With a flag,
+// the named device must be both known and currently connected. Without one, the
+// only connected device wins; zero or 2+ devices each fail with a clear message
+// (the ambiguous case lists every candidate so the user can pick).
+pub fn resolve_target(
+    conn: &Connection,
+    detected: &[DetectedDevice],
+    flag: Option<&str>,
+) -> std::result::Result<DetectedDevice, SelectError> {
+    if let Some(target) = flag {
+        let serial = devices::resolve_serial(conn, target)?;
+        return detected
+            .iter()
+            .find(|d| d.serial == serial)
+            .cloned()
+            .ok_or_else(|| SelectError::NotConnected {
+                target: target.to_string(),
+            });
+    }
+    match detected {
+        [] => Err(SelectError::NoneConnected),
+        [only] => Ok(only.clone()),
+        many => Err(SelectError::Ambiguous {
+            candidates: candidate_labels(conn, many),
+        }),
+    }
+}
+
+fn candidate_labels(conn: &Connection, detected: &[DetectedDevice]) -> String {
+    let aliases = devices::list(conn).unwrap_or_default();
+    detected
+        .iter()
+        .map(|d| {
+            match aliases
+                .iter()
+                .find(|k| k.serial == d.serial)
+                .and_then(|k| k.alias.as_deref())
+            {
+                Some(alias) => format!("  {alias} ({})", d.serial),
+                None => format!("  {}", d.serial),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(target_os = "linux")]
@@ -172,17 +235,28 @@ fn mount_free_bytes(mount: &Path) -> Option<u64> {
 }
 
 fn count_documents(mount: &Path) -> Option<usize> {
-    let documents = mount.join("documents");
-    if !documents.is_dir() {
+    // `None` distinguishes "no documents/ dir" from an empty one (`Some(0)`).
+    if !mount.join("documents").is_dir() {
         return None;
     }
-    let mut count = 0usize;
+    Some(ebook_files(mount).len())
+}
+
+// Every ebook file under `<mount>/documents/`, recursively. Shared by the book
+// count in `cdx device ls` and the listing in `cdx device books`. A flaky
+// subdirectory is logged and skipped, never fatal.
+pub(crate) fn ebook_files(mount: &Path) -> Vec<PathBuf> {
+    let documents = mount.join("documents");
+    let mut files = Vec::new();
+    if !documents.is_dir() {
+        return files;
+    }
     let mut stack = vec![documents];
     while let Some(dir) = stack.pop() {
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(e) => {
-                tracing::warn!(dir = %dir.display(), error = %e, "skipping directory in book count");
+                tracing::warn!(dir = %dir.display(), error = %e, "skipping directory in device scan");
                 continue;
             }
         };
@@ -191,11 +265,11 @@ fn count_documents(mount: &Path) -> Option<usize> {
             if path.is_dir() {
                 stack.push(path);
             } else if is_ebook(&path) {
-                count += 1;
+                files.push(path);
             }
         }
     }
-    Some(count)
+    files
 }
 
 fn is_ebook(path: &Path) -> bool {
@@ -352,6 +426,65 @@ garbage-line
         fs::write(docs.join("nested/c.txt"), b"x").unwrap();
 
         assert_eq!(count_documents(dir.path()), Some(3));
+    }
+
+    fn fresh_conn() -> (tempfile::TempDir, rusqlite::Connection) {
+        let dir = tempdir().unwrap();
+        let conn = crate::catalog::init(&dir.path().join("cat")).unwrap();
+        (dir, conn)
+    }
+
+    #[test]
+    fn resolve_target_defaults_to_the_only_connected_device() {
+        let (_dir, conn) = fresh_conn();
+        let detected = vec![detected("AAA", "/mnt/k")];
+        let target = resolve_target(&conn, &detected, None).unwrap();
+        assert_eq!(target.serial, "AAA");
+    }
+
+    #[test]
+    fn resolve_target_errors_when_none_connected() {
+        let (_dir, conn) = fresh_conn();
+        let err = resolve_target(&conn, &[], None).unwrap_err();
+        assert!(matches!(err, SelectError::NoneConnected));
+    }
+
+    #[test]
+    fn resolve_target_errors_and_lists_candidates_when_ambiguous() {
+        let (_dir, conn) = fresh_conn();
+        devices::record_seen(&conn, "AAA").unwrap();
+        devices::set_alias(&conn, "AAA", "paperwhite").unwrap();
+        devices::record_seen(&conn, "BBB").unwrap();
+        let detected = vec![detected("AAA", "/mnt/a"), detected("BBB", "/mnt/b")];
+        let err = resolve_target(&conn, &detected, None).unwrap_err();
+        match err {
+            SelectError::Ambiguous { candidates } => {
+                assert!(candidates.contains("paperwhite"));
+                assert!(candidates.contains("BBB"));
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_target_by_flag_requires_connection() {
+        let (_dir, conn) = fresh_conn();
+        devices::record_seen(&conn, "AAA").unwrap();
+        devices::set_alias(&conn, "AAA", "paperwhite").unwrap();
+        // Known device, but not in the detected set.
+        let err = resolve_target(&conn, &[], Some("paperwhite")).unwrap_err();
+        assert!(matches!(err, SelectError::NotConnected { target } if target == "paperwhite"));
+
+        let detected = vec![detected("AAA", "/mnt/a")];
+        let target = resolve_target(&conn, &detected, Some("paperwhite")).unwrap();
+        assert_eq!(target.serial, "AAA");
+    }
+
+    #[test]
+    fn resolve_target_by_flag_unknown_device_errors() {
+        let (_dir, conn) = fresh_conn();
+        let err = resolve_target(&conn, &[], Some("ghost")).unwrap_err();
+        assert!(matches!(err, SelectError::Lookup(_)));
     }
 
     #[test]

@@ -240,6 +240,15 @@ pub enum DeviceCmd {
         #[arg(value_name = "NEW_ALIAS")]
         new_alias: String,
     },
+    #[command(about = "List books on a connected device with catalog presence")]
+    Books {
+        #[arg(
+            long,
+            value_name = "SERIAL_OR_ALIAS",
+            help = "Target device (defaults to the only connected device)"
+        )]
+        device: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

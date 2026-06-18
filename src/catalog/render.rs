@@ -11,6 +11,7 @@ use crate::catalog::books::{
 use crate::catalog::columns::LibraryColumn;
 use crate::catalog::devices::AliasOutcome;
 use crate::catalog::handlers::{AddOutcome, CatalogRow, InitOutcome, RmOutcome, UseOutcome};
+use crate::device::books::DeviceBook;
 use crate::device::DeviceRow;
 
 // Single funnel used by every dispatcher that picks between a human and a
@@ -749,6 +750,54 @@ pub fn render_device_ls_jsonl<W: Write>(rows: &[DeviceRow], w: &mut W) -> io::Re
 }
 
 #[derive(Serialize)]
+struct DeviceBookJson<'a> {
+    presence: &'a str,
+    title: Option<&'a str>,
+    author: Option<&'a str>,
+    format: &'a str,
+    device_path: &'a Path,
+    matched_book_id: Option<i64>,
+}
+
+pub fn render_device_books_human<W: Write>(books: &[DeviceBook], w: &mut W) -> io::Result<()> {
+    if books.is_empty() {
+        writeln!(w, "No books found on device.")?;
+        return Ok(());
+    }
+    let mut tw = TabWriter::new(w).padding(2);
+    writeln!(&mut tw, "PRESENCE\tTITLE\tAUTHOR\tFORMAT\tPATH")?;
+    for book in books {
+        let title = book.title.as_deref().unwrap_or("-");
+        let author = book.author.as_deref().unwrap_or("-");
+        writeln!(
+            &mut tw,
+            "{presence}\t{title}\t{author}\t{format}\t{path}",
+            presence = book.presence.as_str(),
+            format = book.format,
+            path = book.device_path.display(),
+        )?;
+    }
+    tw.flush()?;
+    Ok(())
+}
+
+pub fn render_device_books_jsonl<W: Write>(books: &[DeviceBook], w: &mut W) -> io::Result<()> {
+    for book in books {
+        let value = DeviceBookJson {
+            presence: book.presence.as_str(),
+            title: book.title.as_deref(),
+            author: book.author.as_deref(),
+            format: &book.format,
+            device_path: &book.device_path,
+            matched_book_id: book.matched_book_id,
+        };
+        serde_json::to_writer(&mut *w, &value)?;
+        writeln!(w)?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
 struct AliasJson<'a> {
     action: &'a str,
     serial: &'a str,
@@ -921,6 +970,93 @@ mod tests {
         assert_eq!(v["connected"], true);
         assert_eq!(v["book_count"], 42);
         assert_eq!(v["free_bytes"], 2_147_483_648u64);
+    }
+
+    fn device_book(
+        title: Option<&str>,
+        author: Option<&str>,
+        presence: crate::device::books::Presence,
+        path: &str,
+        matched: Option<i64>,
+    ) -> DeviceBook {
+        DeviceBook {
+            title: title.map(str::to_string),
+            author: author.map(str::to_string),
+            format: "epub".to_string(),
+            device_path: PathBuf::from(path),
+            presence,
+            matched_book_id: matched,
+            matched_title: matched.map(|_| "Catalog Title".to_string()),
+        }
+    }
+
+    #[test]
+    fn device_books_human_empty_prints_hint() {
+        let mut buf = Vec::new();
+        render_device_books_human(&[], &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("No books found"));
+    }
+
+    #[test]
+    fn device_books_human_shows_presence_and_dashes() {
+        use crate::device::books::Presence;
+        let books = vec![
+            device_book(
+                Some("Dune"),
+                Some("Herbert"),
+                Presence::Both,
+                "documents/Dune.epub",
+                Some(1),
+            ),
+            device_book(
+                None,
+                None,
+                Presence::DeviceOnly,
+                "documents/mystery.epub",
+                None,
+            ),
+        ];
+        let mut buf = Vec::new();
+        render_device_books_human(&books, &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("PRESENCE"));
+        assert!(text.contains("both"));
+        assert!(text.contains("Dune"));
+        assert!(text.contains("device_only"));
+        // Missing title/author collapse to "-".
+        assert!(text.contains('-'));
+    }
+
+    #[test]
+    fn device_books_jsonl_empty_emits_nothing() {
+        let mut buf = Vec::new();
+        render_device_books_jsonl(&[], &mut buf).unwrap();
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn device_books_jsonl_shape() {
+        use crate::device::books::Presence;
+        let books = vec![device_book(
+            Some("Dune"),
+            Some("Herbert"),
+            Presence::Both,
+            "documents/Dune.epub",
+            Some(7),
+        )];
+        let mut buf = Vec::new();
+        render_device_books_jsonl(&books, &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(v["presence"], "both");
+        assert_eq!(v["title"], "Dune");
+        assert_eq!(v["author"], "Herbert");
+        assert_eq!(v["format"], "epub");
+        assert_eq!(v["device_path"], "documents/Dune.epub");
+        assert_eq!(v["matched_book_id"], 7);
     }
 
     #[test]
