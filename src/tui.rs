@@ -17,6 +17,7 @@ pub mod app;
 pub mod catalogs;
 pub mod confirm;
 pub mod devices;
+pub mod duplicates;
 pub mod help;
 pub mod library;
 pub mod loading;

@@ -4,6 +4,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 
 pub mod books;
 pub mod catalog;
+pub mod dedup;
 pub mod device;
 pub mod edit;
 pub mod embed;
@@ -275,6 +276,48 @@ pub enum Command {
     },
     #[command(subcommand, about = "Manage ereaders (devices)")]
     Device(DeviceCmd),
+    #[command(about = "Find duplicate books in the current catalog and assist removal")]
+    Dedup {
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = DedupBy::All,
+            help = "Detection signal: hash, meta, or all (union of both)"
+        )]
+        by: DedupBy,
+        #[arg(
+            long,
+            help = "Interactively pick which copies to remove (requires a terminal)"
+        )]
+        rm: bool,
+        #[arg(
+            long,
+            help = "Remove every suggested copy without prompting (for scripts; implies removal)"
+        )]
+        yes: bool,
+        #[arg(
+            long,
+            help = "Move removed files to the current working directory instead of deleting them"
+        )]
+        keep: bool,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum DedupBy {
+    Hash,
+    Meta,
+    All,
+}
+
+impl From<DedupBy> for crate::dedup::DetectBy {
+    fn from(by: DedupBy) -> Self {
+        match by {
+            DedupBy::Hash => crate::dedup::DetectBy::Hash,
+            DedupBy::Meta => crate::dedup::DetectBy::Meta,
+            DedupBy::All => crate::dedup::DetectBy::All,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]

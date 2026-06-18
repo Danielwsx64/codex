@@ -11,6 +11,7 @@ use crate::catalog::books::{
 use crate::catalog::columns::LibraryColumn;
 use crate::catalog::devices::AliasOutcome;
 use crate::catalog::handlers::{AddOutcome, CatalogRow, InitOutcome, RmOutcome, UseOutcome};
+use crate::dedup::SuggestionReason;
 use crate::device::books::DeviceBook;
 use crate::device::clean::CleanOutcome;
 use crate::device::pull::PullOutcome;
@@ -685,6 +686,125 @@ pub fn render_book_rm_jsonl<W: Write>(outcome: &BookRmOutcome, w: &mut W) -> io:
     writeln!(w)
 }
 
+// A duplicate group enriched with the book data the renderers need. The domain
+// `DuplicateGroup` carries only ids; the dispatch assembles this view so the
+// renderers stay dumb formatters.
+pub struct DedupGroupView<'a> {
+    pub reason: SuggestionReason,
+    pub linked_by_hash: bool,
+    pub linked_by_meta: bool,
+    pub members: Vec<DedupMemberView<'a>>,
+}
+
+pub struct DedupMemberView<'a> {
+    pub book: &'a Book,
+    pub score: u32,
+    pub suggested: bool,
+}
+
+fn dedup_linked_by(group: &DedupGroupView<'_>) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if group.linked_by_hash {
+        out.push("hash");
+    }
+    if group.linked_by_meta {
+        out.push("meta");
+    }
+    out
+}
+
+pub fn render_dedup_human<W: Write>(groups: &[DedupGroupView<'_>], w: &mut W) -> io::Result<()> {
+    if groups.is_empty() {
+        writeln!(w, "No duplicate books found.")?;
+        return Ok(());
+    }
+    for (n, group) in groups.iter().enumerate() {
+        let linked = dedup_linked_by(group).join(", ");
+        writeln!(w, "Group {} — linked by {linked}", n + 1)?;
+        let mut tw = TabWriter::new(&mut *w).padding(2);
+        writeln!(&mut tw, "\tID\tTITLE\tAUTHOR\tFORMAT\tSCORE\tADDED")?;
+        for m in &group.members {
+            let marker = if m.suggested { "*" } else { " " };
+            writeln!(
+                &mut tw,
+                "{marker}\t{id}\t{title}\t{author}\t{format}\t{score}\t{added}",
+                id = m.book.id,
+                title = m.book.title,
+                author = m.book.author.as_deref().unwrap_or("-"),
+                format = m.book.format,
+                score = m.score,
+                added = m.book.added_at,
+            )?;
+        }
+        tw.flush()?;
+        writeln!(
+            w,
+            "  → suggest removing id {id}: {reason}",
+            id = group
+                .members
+                .iter()
+                .find(|m| m.suggested)
+                .map(|m| m.book.id)
+                .unwrap_or_default(),
+            reason = group.reason.label(),
+        )?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct DedupMemberJson<'a> {
+    id: i64,
+    title: &'a str,
+    author: Option<&'a str>,
+    format: &'a str,
+    score: u32,
+    added_at: &'a str,
+    embed_status: &'a str,
+    suggested: bool,
+}
+
+#[derive(Serialize)]
+struct DedupGroupJson<'a> {
+    linked_by: Vec<&'static str>,
+    suggested_id: i64,
+    reason: &'a str,
+    members: Vec<DedupMemberJson<'a>>,
+}
+
+pub fn render_dedup_jsonl<W: Write>(groups: &[DedupGroupView<'_>], w: &mut W) -> io::Result<()> {
+    for group in groups {
+        let suggested_id = group
+            .members
+            .iter()
+            .find(|m| m.suggested)
+            .map(|m| m.book.id)
+            .unwrap_or_default();
+        let value = DedupGroupJson {
+            linked_by: dedup_linked_by(group),
+            suggested_id,
+            reason: group.reason.json_slug(),
+            members: group
+                .members
+                .iter()
+                .map(|m| DedupMemberJson {
+                    id: m.book.id,
+                    title: &m.book.title,
+                    author: m.book.author.as_deref(),
+                    format: &m.book.format,
+                    score: m.score,
+                    added_at: &m.book.added_at,
+                    embed_status: m.book.embed_status.as_str(),
+                    suggested: m.suggested,
+                })
+                .collect(),
+        };
+        serde_json::to_writer(&mut *w, &value)?;
+        writeln!(w)?;
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct DeviceLsJson<'a> {
     alias: Option<&'a str>,
@@ -1206,6 +1326,109 @@ mod tests {
         let conflict: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(conflict["action"], "conflict");
         assert_eq!(conflict["candidates"], serde_json::json!([7, 9]));
+    }
+
+    fn dedup_book(id: i64, title: &str) -> Book {
+        Book {
+            id,
+            title: title.to_string(),
+            author: Some("Frank Herbert".to_string()),
+            format: "epub".to_string(),
+            file_path: format!("books/{id}/f.epub"),
+            added_at: "2024-01-01T00:00:00Z".to_string(),
+            description: None,
+            series_name: None,
+            series_index: None,
+            rating: None,
+            isbn: None,
+            publisher: None,
+            language: None,
+            published_date: None,
+            tags: Vec::new(),
+            embed_status: crate::catalog::books::EmbedStatus::Pending,
+            embed_synced_at: None,
+        }
+    }
+
+    #[test]
+    fn dedup_jsonl_empty_emits_nothing() {
+        let mut buf = Vec::new();
+        render_dedup_jsonl(&[], &mut buf).unwrap();
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn dedup_jsonl_marks_exactly_one_suggested_with_reason() {
+        let a = dedup_book(1, "Dune");
+        let b = dedup_book(2, "Dune");
+        let group = DedupGroupView {
+            reason: SuggestionReason::IdenticalHash,
+            linked_by_hash: true,
+            linked_by_meta: false,
+            members: vec![
+                DedupMemberView {
+                    book: &a,
+                    score: 1,
+                    suggested: true,
+                },
+                DedupMemberView {
+                    book: &b,
+                    score: 3,
+                    suggested: false,
+                },
+            ],
+        };
+        let mut buf = Vec::new();
+        render_dedup_jsonl(std::slice::from_ref(&group), &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let obj: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(obj["suggested_id"], 1);
+        assert_eq!(obj["reason"], "identical_hash");
+        assert_eq!(obj["linked_by"], serde_json::json!(["hash"]));
+        let members = obj["members"].as_array().unwrap();
+        let suggested = members.iter().filter(|m| m["suggested"] == true).count();
+        assert_eq!(suggested, 1);
+    }
+
+    #[test]
+    fn dedup_human_marks_suggested_copy() {
+        let a = dedup_book(1, "Dune");
+        let b = dedup_book(2, "Dune");
+        let group = DedupGroupView {
+            reason: SuggestionReason::FewerMetadata,
+            linked_by_hash: false,
+            linked_by_meta: true,
+            members: vec![
+                DedupMemberView {
+                    book: &a,
+                    score: 1,
+                    suggested: true,
+                },
+                DedupMemberView {
+                    book: &b,
+                    score: 3,
+                    suggested: false,
+                },
+            ],
+        };
+        let mut buf = Vec::new();
+        render_dedup_human(std::slice::from_ref(&group), &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("linked by meta"));
+        assert!(text.contains("suggest removing id 1"));
+        assert!(text.contains("fewer metadata"));
+    }
+
+    #[test]
+    fn dedup_human_empty_is_friendly() {
+        let mut buf = Vec::new();
+        render_dedup_human(&[], &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "No duplicate books found.\n"
+        );
     }
 
     fn row(name: &str, path: &str, current: bool, missing: bool) -> CatalogRow {

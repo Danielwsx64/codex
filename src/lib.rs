@@ -4,6 +4,7 @@
 pub mod catalog;
 pub mod cli;
 pub mod config;
+pub mod dedup;
 pub mod device;
 pub mod embed;
 pub mod epub;
@@ -158,6 +159,15 @@ pub fn run() -> Result<()> {
         ),
         Some(Command::Device(cmd)) => cli::device::dispatch(
             cmd,
+            cli.data_dir.as_deref(),
+            cli.catalog.as_deref(),
+            cli.json,
+        ),
+        Some(Command::Dedup { by, rm, yes, keep }) => cli::dedup::dispatch(
+            by.into(),
+            rm,
+            yes,
+            keep,
             cli.data_dir.as_deref(),
             cli.catalog.as_deref(),
             cli.json,

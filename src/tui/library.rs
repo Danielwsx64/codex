@@ -70,6 +70,10 @@ const TABLE_BINDINGS: &[Binding] = &[
         desc: "sync with current device",
     },
     Binding {
+        keys: "D",
+        desc: "find duplicate books",
+    },
+    Binding {
         keys: "/",
         desc: "quick filter (Esc clears when filtered)",
     },
@@ -476,6 +480,8 @@ pub enum LibraryAction {
     // Sync is device-wide, not book-specific: hand off to the Devices screen,
     // which resolves the current device and renders the sync plan.
     OpenDeviceSync,
+    // Curation is catalog-wide: open the dedicated Duplicates screen.
+    OpenDuplicates,
 }
 
 impl State {
@@ -576,6 +582,7 @@ pub fn handle_key(state: &mut State, key: KeyEvent) -> LibraryAction {
         KeyCode::Char('p') => open_confirm_push(state),
         KeyCode::Char('s') => LibraryAction::OpenDeviceSync,
         KeyCode::Char('d') | KeyCode::Delete => open_confirm_rm(state),
+        KeyCode::Char('D') => LibraryAction::OpenDuplicates,
         KeyCode::Char('/') => open_filter_input(state),
         KeyCode::Esc => {
             // In filtered mode, Esc drops the filter and returns to the full

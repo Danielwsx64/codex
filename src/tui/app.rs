@@ -11,6 +11,7 @@ use crate::config::Registry;
 use crate::tui::catalogs;
 use crate::tui::confirm;
 use crate::tui::devices;
+use crate::tui::duplicates;
 use crate::tui::help;
 use crate::tui::library;
 use crate::tui::loading;
@@ -27,6 +28,7 @@ pub enum Screen {
     Devices(devices::State),
     NewCatalog(new_catalog::State),
     Library(library::State),
+    Duplicates(duplicates::State),
     Loading(Box<loading::State>),
     Reader(Box<reader::State>),
 }
@@ -258,6 +260,9 @@ impl App {
             palette::Command::Devices => {
                 self.screen = Screen::Devices(devices::State::load(&self.registry));
             }
+            palette::Command::Duplicates => {
+                self.screen = Screen::Duplicates(duplicates::State::load(&self.registry));
+            }
             palette::Command::Help => {
                 self.help = Some(help::State);
             }
@@ -317,6 +322,10 @@ impl App {
             Screen::Library(state) => {
                 let action = library::handle_key(state, key);
                 self.apply_library_action(action);
+            }
+            Screen::Duplicates(state) => {
+                let action = duplicates::handle_key(state, key);
+                self.apply_duplicates_action(action);
             }
             Screen::Loading(state) => {
                 let action = loading::handle_key(state, key);
@@ -399,6 +408,9 @@ impl App {
             library::LibraryAction::OpenReader { catalog_dir, book } => {
                 self.open_reader(catalog_dir, *book);
             }
+            library::LibraryAction::OpenDuplicates => {
+                self.screen = Screen::Duplicates(duplicates::State::load(&self.registry));
+            }
             library::LibraryAction::OpenDeviceSync => {
                 // Resolve the current device and open its plan on a fresh Devices
                 // screen. `None` means a sync view opened (navigate there); a Status
@@ -413,6 +425,21 @@ impl App {
                     }
                     _ => {}
                 }
+            }
+        }
+    }
+
+    fn apply_duplicates_action(&mut self, action: duplicates::DuplicatesAction) {
+        match action {
+            duplicates::DuplicatesAction::None => {}
+            duplicates::DuplicatesAction::Back => {
+                self.screen = Screen::Welcome(welcome::State::new());
+            }
+            duplicates::DuplicatesAction::OpenPalette => {
+                self.palette = Some(palette::State::new());
+            }
+            duplicates::DuplicatesAction::Status(s) => {
+                self.status = Some(s);
             }
         }
     }
@@ -498,6 +525,7 @@ impl App {
             Screen::Devices(state) => devices::render(frame, chunks[0], state),
             Screen::NewCatalog(state) => new_catalog::render(frame, chunks[0], state),
             Screen::Library(state) => library::render(frame, chunks[0], state),
+            Screen::Duplicates(state) => duplicates::render(frame, chunks[0], state),
             Screen::Loading(state) => loading::render(frame, chunks[0], state),
             Screen::Reader(state) => reader::render(frame, chunks[0], state),
         }
@@ -529,6 +557,7 @@ impl App {
             Screen::Devices(state) => devices::help_sections(state),
             Screen::NewCatalog(state) => new_catalog::help_sections(state),
             Screen::Library(state) => library::help_sections(state),
+            Screen::Duplicates(state) => duplicates::help_sections(state),
             Screen::Loading(state) => loading::help_sections(state),
             Screen::Reader(state) => reader::help_sections(state),
         }
@@ -740,6 +769,26 @@ mod tests {
         app.dispatch(Event::Key(key(KeyCode::Enter))).unwrap();
         assert!(app.palette.is_none());
         assert!(matches!(app.screen, Screen::Devices(_)));
+    }
+
+    #[test]
+    fn palette_duplicates_command_navigates() {
+        let mut app = fresh_app();
+        app.dispatch(Event::Key(key(KeyCode::Char(':')))).unwrap();
+        for ch in "duplicates".chars() {
+            app.dispatch(Event::Key(key(KeyCode::Char(ch)))).unwrap();
+        }
+        app.dispatch(Event::Key(key(KeyCode::Enter))).unwrap();
+        assert!(app.palette.is_none());
+        assert!(matches!(app.screen, Screen::Duplicates(_)));
+    }
+
+    #[test]
+    fn library_capital_d_opens_duplicates() {
+        let mut app = fresh_app();
+        app.screen = Screen::Library(library::State::load(&app.registry));
+        app.dispatch(Event::Key(key(KeyCode::Char('D')))).unwrap();
+        assert!(matches!(app.screen, Screen::Duplicates(_)));
     }
 
     #[test]

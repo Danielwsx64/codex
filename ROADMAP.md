@@ -274,21 +274,21 @@ language/published_date/series/tags/rating) e, no desempate, a mais
 "desatualizada" (mais antiga por `added_at` / embed_status mais fraco).
 A decisão final é sempre do usuário — o cdx só sugere.
 
-- [ ] `cdx dedup` — lista os grupos de duplicatas detectadas (qualquer
+- [x] `cdx dedup` — lista os grupos de duplicatas detectadas (qualquer
       método), marcando em cada grupo a cópia sugerida pra remoção e o
       motivo ("hash idêntico" / "menos metadados" / "mais antiga");
       humano + `--json` (JSONL, um objeto por grupo)
-- [ ] Flag `--by hash|meta|all` (default `all` = união dos sinais) pra
+- [x] Flag `--by hash|meta|all` (default `all` = união dos sinais) pra
       restringir o método de detecção
-- [ ] Score de completude de metadados — função pura sobre `Book` que
+- [x] Score de completude de metadados — função pura sobre `Book` que
       pontua a presença dos campos; elege a cópia sugerida e aparece no
       `--json`. Backfill de fingerprints garante que o método de hash
       funcione nos livros antigos
-- [ ] Remoção assistida — seletor (setas/`j``k` + Enter, ou aceita a
+- [x] Remoção assistida — seletor (setas/`j``k` + Enter, ou aceita a
       sugestão) que reusa o caminho do `cdx rm` (apaga do catálogo +
       arquivo; `--keep` move pra cwd); `--yes` aceita todas as sugestões
       (script). Nunca apaga sem confirmação
-- [ ] TUI: tela/ação "Duplicates" na seção Library — lista os grupos,
+- [x] TUI: tela/ação "Duplicates" na seção Library — lista os grupos,
       destaca a sugestão e apaga com confirmação (espelha `cdx dedup`)
 
 ## v0.6 — Conversão de formatos

@@ -400,7 +400,16 @@ pub fn find_book_by_hashes(
     Ok(id)
 }
 
-fn ensure_fingerprints(conn: &Connection, catalog_dir: &Path) -> Result<()> {
+// Every (book_id, hash) pair stored for the catalog. Kinds are already
+// constrained to 'full'/'content' by the table CHECK, so no filter is needed.
+// Used by `cdx dedup` to link books that share content.
+pub fn load_all_hashes(conn: &Connection) -> Result<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare("SELECT book_id, hash FROM book_hashes")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
+}
+
+pub(crate) fn ensure_fingerprints(conn: &Connection, catalog_dir: &Path) -> Result<()> {
     let pending: Vec<(i64, String, String)> = {
         let mut stmt = conn.prepare(
             "SELECT id, format, file_path FROM books b
@@ -1125,6 +1134,31 @@ mod tests {
         let conn = open_fresh(&cat);
         let err = resolve_target(&conn, "Ghost").unwrap_err();
         assert!(matches!(err, Error::NotFound { .. }));
+    }
+
+    #[test]
+    fn load_all_hashes_returns_every_pair() {
+        let dir = tempdir().unwrap();
+        let cat = dir.path().join("c");
+        let conn = open_fresh(&cat);
+        let a = insert_book(&conn, "A", None);
+        let b = insert_book(&conn, "B", None);
+        conn.execute(
+            "INSERT INTO book_hashes (book_id, kind, hash) VALUES (?1, 'full', 'h1'), (?1, 'content', 'h2'), (?2, 'full', 'h3')",
+            params![a, b],
+        )
+        .unwrap();
+
+        let mut pairs = load_all_hashes(&conn).unwrap();
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![
+                (a, "h1".to_string()),
+                (a, "h2".to_string()),
+                (b, "h3".to_string()),
+            ]
+        );
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub const COMMANDS: &[&str] = &[
     ":catalogs",
     ":search",
     ":devices",
+    ":duplicates",
     ":help",
     ":h",
     ":quit",
@@ -45,6 +46,7 @@ pub enum Command {
     Catalogs,
     Search,
     Devices,
+    Duplicates,
     Help,
     Quit,
     /// Absolute page jump (1-indexed). Active only in the reader.
@@ -97,6 +99,7 @@ pub fn parse(input: &str) -> Option<Command> {
         ":catalogs" => Some(Command::Catalogs),
         ":search" => Some(Command::Search),
         ":devices" => Some(Command::Devices),
+        ":duplicates" => Some(Command::Duplicates),
         ":help" | ":h" => Some(Command::Help),
         ":quit" | ":q" => Some(Command::Quit),
         _ => parse_jump(input),
@@ -244,11 +247,31 @@ mod tests {
     }
 
     #[test]
-    fn tab_completes_d_to_devices() {
+    fn tab_at_d_is_ambiguous_devices_duplicates() {
         let mut s = State::new();
         type_text(&mut s, "d");
         handle_key(&mut s, key(KeyCode::Tab));
+        // `:devices` and `:duplicates` share only `:d`, so completion stalls there.
+        assert_eq!(s.input.value(), ":d");
+    }
+
+    #[test]
+    fn tab_completes_de_to_devices() {
+        let mut s = State::new();
+        type_text(&mut s, "de");
+        handle_key(&mut s, key(KeyCode::Tab));
         assert_eq!(s.input.value(), ":devices");
+    }
+
+    #[test]
+    fn enter_duplicates_returns_duplicates_command() {
+        let mut s = State::new();
+        type_text(&mut s, "duplicates");
+        let action = handle_key(&mut s, key(KeyCode::Enter));
+        assert!(matches!(
+            action,
+            PaletteAction::Execute(Command::Duplicates)
+        ));
     }
 
     #[test]
