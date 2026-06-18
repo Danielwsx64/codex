@@ -15,7 +15,7 @@ também a tela TUI correspondente.
 
 Exceção (rara, sempre justificada):
 
-- Leitor de livros (v0.8) — só faz sentido na TUI.
+- Leitor de livros (v0.9) — só faz sentido na TUI.
 
 ## TUI: navegação global
 
@@ -192,7 +192,7 @@ A identidade de um livro entre catálogo e device tem duas camadas:
       lendo metadados dos arquivos (não só filename), com a coluna de
       presença ("both" / "device only") via sync state + match
       normalizado; humano + JSONL
-- [ ] Seleção de device: flag `--device <alias>` em `device books`,
+- [x] Seleção de device: flag `--device <alias>` em `device books`,
       `push`, `pull` e `sync`. Um device conectado → default
       implícito; dois ou mais sem o flag → erro claro listando os
       candidatos (nunca escolher sozinho)
@@ -204,18 +204,30 @@ A identidade de um livro entre catálogo e device tem duas camadas:
       reusando o pipeline do `cdx add` (incluindo dedup por hash) e
       grava o sync state; sem `<path>` abre um seletor interativo
       (setas/`j``k` + Enter) listando os livros do device
-- [ ] Verificação de sync: o diff confere cada entrada do sync state
+- [x] Verificação de sync: o diff confere cada entrada do sync state
       pelo fast-path tamanho + mtime; divergência marca o livro como
       `modified` (re-push é oferecido no plano). `--verify` força
       SHA-256 completo (USB é lento — full hash só sob demanda).
       Entrada cujo arquivo sumiu do device vira `missing`
-- [ ] `cdx sync [--device <alias>]` — diff bidirecional **iterativo**:
+- [x] `cdx sync [--device <alias>]` — diff bidirecional **iterativo**:
       computa o plano (faltantes em cada ponta, `modified`, `missing`,
       conflitos de match) e confirma item a item, estilo `git add -p`
       (`y` aplica / `n` pula / `a` aceita o resto / `q` aborta).
       `--dry-run` só imprime o plano; `--yes` aceita tudo (pra
       script). Sync **nunca apaga** em nenhuma ponta — só copia;
       remoção é sempre manual
+- [ ] `cdx device clean [--device <alias>]` — remove livros do device.
+      Sem alvo abre um seletor interativo (setas/`j``k`, multi-seleção,
+      Enter confirma) listando os livros do device; `--all` limpa tudo.
+      Apaga o arquivo no device e remove a entrada correspondente de
+      `device_books` (sync state). **Nunca toca no catálogo local** — a
+      remoção é só na ponta do device, materializando o "remoção é
+      sempre manual" deste milestone. Sempre confirma antes de apagar;
+      `--yes` pula a confirmação (script). `--json` resume o que foi
+      removido (path + bytes liberados)
+- [ ] TUI: ação de limpeza na visão do device — Space marca livros,
+      confirma e apaga (espelha `cdx device clean`); a navegação já
+      resolve a escolha de device sem flag
 - [ ] TUI: tela "Devices" — lista devices (alias, conectado ou não);
       `r` renomeia o apelido; Enter abre a visão de livros do device
       selecionado (a navegação resolve a escolha de device sem flag)
@@ -231,25 +243,61 @@ A identidade de um livro entre catálogo e device tem duas camadas:
 - [ ] TUI: registrar `:devices` no command palette + ativar link
       "Devices" na welcome
 
-## v0.5 — Conversão de formatos
+## v0.5 — Curadoria: duplicatas
+
+Detecção de livros duplicados no catálogo atual e sugestão de qual
+cópia remover. Os sinais de duplicata são combinados por **união**: se
+*qualquer* método aponta suspeita, o grupo entra como candidato.
+
+1. **Hash de conteúdo** — `book_hashes` (SHA-256 `full`/`content`):
+   pega cópias byte-idênticas e o mesmo EPUB antes/depois do embed.
+2. **Título + autor normalizado** — casefold + NFKD, pontuação/whitespace
+   colapsados (mesma normalização do match de device): pega o mesmo
+   livro em formatos/edições diferentes (EPUB vs PDF), onde o hash não
+   casa.
+
+Para cada grupo, o cdx **sugere apagar** a cópia "pior": menos metadados
+preenchidos (score por presença de author/description/isbn/publisher/
+language/published_date/series/tags/rating) e, no desempate, a mais
+"desatualizada" (mais antiga por `added_at` / embed_status mais fraco).
+A decisão final é sempre do usuário — o cdx só sugere.
+
+- [ ] `cdx dedup` — lista os grupos de duplicatas detectadas (qualquer
+      método), marcando em cada grupo a cópia sugerida pra remoção e o
+      motivo ("hash idêntico" / "menos metadados" / "mais antiga");
+      humano + `--json` (JSONL, um objeto por grupo)
+- [ ] Flag `--by hash|meta|all` (default `all` = união dos sinais) pra
+      restringir o método de detecção
+- [ ] Score de completude de metadados — função pura sobre `Book` que
+      pontua a presença dos campos; elege a cópia sugerida e aparece no
+      `--json`. Backfill de fingerprints garante que o método de hash
+      funcione nos livros antigos
+- [ ] Remoção assistida — seletor (setas/`j``k` + Enter, ou aceita a
+      sugestão) que reusa o caminho do `cdx rm` (apaga do catálogo +
+      arquivo; `--keep` move pra cwd); `--yes` aceita todas as sugestões
+      (script). Nunca apaga sem confirmação
+- [ ] TUI: tela/ação "Duplicates" na seção Library — lista os grupos,
+      destaca a sugestão e apaga com confirmação (espelha `cdx dedup`)
+
+## v0.6 — Conversão de formatos
 
 - [ ] `cdx convert <id> --to epub|mobi|azw3` (delegando pra
       `ebook-convert` do Calibre se disponível)
 - [ ] Detectar ausência da dependência externa com mensagem clara
 
-## v0.6 — Outros ereaders
+## v0.7 — Outros ereaders
 
 - [ ] Suporte a Kobo (estrutura de pastas, DB local)
 - [ ] Abstração de "device driver" pra facilitar PocketBook/Boox no
       futuro
 
-## v0.7 — Import / interop
+## v0.8 — Import / interop
 
 - [ ] `cdx import calibre <path>` — importa de uma library Calibre
       existente (lê `metadata.db`)
 - [ ] Export de catálogo cdx em formato neutro (JSON/CSV)
 
-## v0.8 — TUI leitor (EPUB + TXT/Markdown)
+## v0.9 — TUI leitor (EPUB + TXT/Markdown)
 
 Leitura de livros direto no terminal — única feature TUI-only do
 roadmap (cf. exceção declarada no princípio de paridade). As demais
@@ -283,14 +331,14 @@ Fora do escopo desta entrega (defer):
 - Imagens inline (Kitty/Sixel) — depende de detecção de terminal.
 - Exibir `last_read_at` em `cdx ls` / `cdx inspect`.
 
-## v0.8.1 — Leitor: Kindle (MOBI/AZW3)
+## v0.9.1 — Leitor: Kindle (MOBI/AZW3)
 
 Estende o leitor para o ecossistema Kindle. `cdx add` já aceita
 MOBI/AZW3; falta só o caminho de leitura no reader.
 
 - [x] Reader para MOBI via crate `mobi` (`content_as_string()`, com
       fallback lossy pra livros CP1252); reaproveita o pipeline
-      `html2text` → `layout` da v0.8.
+      `html2text` → `layout` da v0.9.
 - [x] Reader para AZW3 (KF8) — o container traz dois streams (MOBI
       legado KF7 + KF8). O crate `mobi` **não** parseia KF8: AZW3
       dual-stream é lido pelo stream legado; KF8-only (saída típica do
@@ -314,7 +362,7 @@ Sub-formatos validados (limitações do crate `mobi` 0.8):
   reader captura via `catch_unwind` e devolve erro normal em vez de
   derrubar a sessão da TUI.
 
-## v0.8.2 — Leitor: PDF
+## v0.9.2 — Leitor: PDF
 
 PDF é layout-fixo, fundamentalmente hostil ao reflow do terminal.
 
@@ -337,7 +385,7 @@ PDF é layout-fixo, fundamentalmente hostil ao reflow do terminal.
       quebra a portabilidade "binário único" do cdx. `lopdf` (já dep)
       é só para metadados; para texto, `pdf-extract` é o caminho.
 
-## v0.8.3 — Leitor: cache de conversão e abertura assíncrona
+## v0.9.3 — Leitor: cache de conversão e abertura assíncrona
 
 A conversão (PDF principalmente) é cara; reabrir um livro não deve
 pagar esse custo de novo, nem congelar a TUI na primeira vez.
@@ -352,11 +400,11 @@ pagar esse custo de novo, nem congelar a TUI na primeira vez.
       ("Opening <título>…"); a TUI continua responsiva e `Esc`
       cancela a abertura voltando pra biblioteca.
 
-## v0.9 — Anotações e marcações
+## v0.10 — Anotações e marcações
 
 Highlights, notas e bookmarks como dado de primeira classe no
 catálogo: importados do Kindle e/ou criados no leitor da TUI. Retoma
-a seleção visual (`v`) e os bookmarks que a v0.8 deixou em defer.
+a seleção visual (`v`) e os bookmarks que a v0.9 deixou em defer.
 
 - [ ] Migration `0008_annotations.sql` — tabela `annotations`
       (`book_id`, `kind` highlight|note|bookmark, `chapter`, `offset`,

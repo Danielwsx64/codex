@@ -1,4 +1,4 @@
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -168,6 +168,173 @@ pub fn dispatch_pull(
     Ok(())
 }
 
+pub fn dispatch_sync(
+    device: Option<&str>,
+    dry_run: bool,
+    yes: bool,
+    verify: bool,
+    data_dir: Option<&Path>,
+    catalog_override: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let registry = load(data_dir)?;
+    let entry = resolve_entry(&registry, catalog_override)?.clone();
+    let mut conn = catalog::open_existing(&entry.path)
+        .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
+
+    let detected = device::detect();
+    // Mirror the other device commands: keep aliases/last_seen fresh.
+    for found in &detected {
+        devices::record_seen(&conn, &found.serial)
+            .with_context(|| format!("while recording device `{}`", found.serial))?;
+    }
+
+    let target = device::resolve_target(&conn, &detected, device)?;
+    let label = device_label(&conn, &target.serial);
+
+    let plan = device::sync::diff(&conn, &target.serial, &target.mount_path, verify)
+        .with_context(|| format!("while computing the sync plan for `{label}`"))?;
+
+    if dry_run {
+        render::emit(
+            json,
+            |w| render::render_sync_plan_human(&plan, w),
+            |w| render::render_sync_plan_jsonl(&plan, w),
+        )?;
+        return Ok(());
+    }
+
+    // Applying needs a terminal to confirm each item; `--json` or a piped stdout
+    // must opt in with `--yes` (or use `--dry-run` to just see the plan).
+    let interactive = !json && std::io::stdout().is_terminal();
+    if !yes && !interactive {
+        anyhow::bail!(
+            "refusing to sync non-interactively; pass --yes to apply or --dry-run to preview"
+        );
+    }
+
+    if plan.is_empty() {
+        if !json {
+            println!("Already in sync.");
+        }
+        return Ok(());
+    }
+
+    let mut pushed = 0usize;
+    let mut pulled = 0usize;
+    let mut skipped = 0usize;
+    let mut accept_all = yes;
+
+    for item in &plan.items {
+        if !accept_all {
+            match confirm(item)? {
+                Decision::Yes => {}
+                Decision::No => {
+                    skipped += 1;
+                    continue;
+                }
+                Decision::All => accept_all = true,
+                // Abort: sync never deletes and stops cleanly, leaving the rest
+                // of the plan untouched.
+                Decision::Quit => break,
+            }
+        }
+        match item.direction {
+            device::sync::Direction::Push => {
+                let book_id = item
+                    .book_id
+                    .expect("sync push items always carry the catalog book id");
+                let outcome = device::push::push(
+                    &conn,
+                    &entry.path,
+                    &target.serial,
+                    &target.mount_path,
+                    &book_id.to_string(),
+                )
+                .with_context(|| format!("while pushing `{}` to `{label}`", item.title))?;
+                render::emit(
+                    json,
+                    |w| render::render_push_human(&outcome, &label, w),
+                    |w| render::render_push_jsonl(&outcome, &target.serial, w),
+                )?;
+                pushed += 1;
+            }
+            device::sync::Direction::Pull => {
+                let arg = item.device_path.display().to_string();
+                let outcome = device::pull::pull(
+                    &mut conn,
+                    &entry.path,
+                    &target.serial,
+                    &target.mount_path,
+                    &arg,
+                    false,
+                )
+                .with_context(|| format!("while pulling `{arg}` from `{label}`"))?;
+                render::emit(
+                    json,
+                    |w| render::render_pull_human(&outcome, &label, w),
+                    |w| render::render_pull_jsonl(&outcome, &target.serial, w),
+                )?;
+                pulled += 1;
+            }
+        }
+    }
+
+    // Conflicts are real ambiguity (a device file matching 2+ catalog books) and
+    // are never applied automatically — surface them so the user resolves by hand.
+    if !plan.conflicts.is_empty() && !json {
+        eprintln!(
+            "\n{} conflict(s) skipped; resolve manually (see `cdx sync --dry-run`).",
+            plan.conflicts.len()
+        );
+    }
+    if !json {
+        println!("\nSynced: {pushed} pushed, {pulled} pulled, {skipped} skipped.");
+    }
+    Ok(())
+}
+
+// One step of the `git add -p`-style confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Decision {
+    Yes,
+    No,
+    All,
+    Quit,
+}
+
+fn parse_decision(input: &str) -> Option<Decision> {
+    match input.trim() {
+        "y" | "Y" => Some(Decision::Yes),
+        "n" | "N" => Some(Decision::No),
+        "a" | "A" => Some(Decision::All),
+        "q" | "Q" => Some(Decision::Quit),
+        _ => None,
+    }
+}
+
+// Prompt for a single plan item, reprompting on unrecognized input. EOF on stdin
+// is treated as quit so a closed pipe can't spin forever.
+fn confirm(item: &device::sync::SyncItem) -> Result<Decision> {
+    let verb = match item.direction {
+        device::sync::Direction::Pull => "pull",
+        device::sync::Direction::Push => "push",
+    };
+    let mut line = String::new();
+    loop {
+        print!("{verb} \"{}\"? [y]es/[n]o/[a]ll/[q]uit ", item.title);
+        std::io::stdout().flush().ok();
+        line.clear();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            return Ok(Decision::Quit);
+        }
+        if let Some(decision) = parse_decision(&line) {
+            return Ok(decision);
+        }
+        println!("Please answer y, n, a, or q.");
+    }
+}
+
 // Shared interactive selection for `push`/`pull` when the positional argument is
 // omitted: render each row to a label and let the user pick one. The picker
 // needs a terminal and is meaningless with machine output, so `--json` or a
@@ -264,4 +431,25 @@ fn dispatch_ls(data_dir: Option<&Path>, catalog_override: Option<&str>, json: bo
         |w| render::render_device_ls_jsonl(&rows, w),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_decision, Decision};
+
+    #[test]
+    fn parse_decision_accepts_each_key_either_case() {
+        assert_eq!(parse_decision("y"), Some(Decision::Yes));
+        assert_eq!(parse_decision("Y\n"), Some(Decision::Yes));
+        assert_eq!(parse_decision(" n "), Some(Decision::No));
+        assert_eq!(parse_decision("a"), Some(Decision::All));
+        assert_eq!(parse_decision("Q\n"), Some(Decision::Quit));
+    }
+
+    #[test]
+    fn parse_decision_rejects_unknown_input() {
+        assert_eq!(parse_decision(""), None);
+        assert_eq!(parse_decision("yes please"), None);
+        assert_eq!(parse_decision("x"), None);
+    }
 }

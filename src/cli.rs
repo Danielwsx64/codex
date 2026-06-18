@@ -255,6 +255,24 @@ pub enum Command {
         #[arg(long, help = "Import even if the content is already in the catalog")]
         force: bool,
     },
+    #[command(about = "Sync books between the catalog and a connected device")]
+    Sync {
+        #[arg(
+            long,
+            value_name = "SERIAL_OR_ALIAS",
+            help = "Target device (defaults to the only connected device)"
+        )]
+        device: Option<String>,
+        #[arg(long, help = "Print the sync plan without copying anything")]
+        dry_run: bool,
+        #[arg(long, help = "Apply every item without asking (for scripts)")]
+        yes: bool,
+        #[arg(
+            long,
+            help = "Re-hash files that pass the size+mtime check (slower, catches silent edits)"
+        )]
+        verify: bool,
+    },
     #[command(subcommand, about = "Manage ereaders (devices)")]
     Device(DeviceCmd),
 }

@@ -142,6 +142,20 @@ pub fn run() -> Result<()> {
             cli.catalog.as_deref(),
             cli.json,
         ),
+        Some(Command::Sync {
+            device,
+            dry_run,
+            yes,
+            verify,
+        }) => cli::device::dispatch_sync(
+            device.as_deref(),
+            dry_run,
+            yes,
+            verify,
+            cli.data_dir.as_deref(),
+            cli.catalog.as_deref(),
+            cli.json,
+        ),
         Some(Command::Device(cmd)) => cli::device::dispatch(
             cmd,
             cli.data_dir.as_deref(),

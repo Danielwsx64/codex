@@ -69,6 +69,35 @@ pub fn synced_paths(conn: &Connection, serial: &str) -> rusqlite::Result<HashMap
     rows.collect()
 }
 
+// The exact sync state for a device, one entry per file cdx synced there. Unlike
+// `synced_paths`, this carries the recorded size/mtime/hash so the sync diff can
+// detect a file that changed on the device (fast-path size+mtime, `--verify` hash)
+// or vanished from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncedFile {
+    pub book_id: i64,
+    pub device_path: PathBuf,
+    pub hash: String,
+    pub size: i64,
+    pub mtime: i64,
+}
+
+pub fn synced_state(conn: &Connection, serial: &str) -> rusqlite::Result<Vec<SyncedFile>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT book_id, device_path, hash, size, mtime FROM device_books WHERE device_serial = ?1",
+    )?;
+    let rows = stmt.query_map(params![serial], |row| {
+        Ok(SyncedFile {
+            book_id: row.get(0)?,
+            device_path: PathBuf::from(row.get::<_, String>(1)?),
+            hash: row.get(2)?,
+            size: row.get(3)?,
+            mtime: row.get(4)?,
+        })
+    })?;
+    rows.collect()
+}
+
 // Write the exact sync state for a file cdx put on the device. Keyed by
 // (serial, book_id), so re-pushing the same book updates the single row rather
 // than duplicating it. `device_path` is stored relative to the mount root

@@ -14,6 +14,7 @@ use crate::catalog::handlers::{AddOutcome, CatalogRow, InitOutcome, RmOutcome, U
 use crate::device::books::DeviceBook;
 use crate::device::pull::PullOutcome;
 use crate::device::push::PushOutcome;
+use crate::device::sync::{SyncItem, SyncPlan};
 use crate::device::DeviceRow;
 
 // Single funnel used by every dispatcher that picks between a human and a
@@ -799,6 +800,118 @@ pub fn render_device_books_jsonl<W: Write>(books: &[DeviceBook], w: &mut W) -> i
     Ok(())
 }
 
+// "pull", or "push (new|modified|missing)" — the reason only applies to pushes.
+fn sync_action_label(item: &SyncItem) -> String {
+    match item.push_reason {
+        Some(reason) => {
+            let detail = match reason {
+                crate::device::sync::PushReason::NotOnDevice => "new",
+                crate::device::sync::PushReason::Modified => "modified",
+                crate::device::sync::PushReason::Missing => "missing",
+            };
+            format!("push ({detail})")
+        }
+        None => item.direction.as_str().to_string(),
+    }
+}
+
+pub fn render_sync_plan_human<W: Write>(plan: &SyncPlan, w: &mut W) -> io::Result<()> {
+    if plan.is_empty() {
+        writeln!(w, "Already in sync.")?;
+        return Ok(());
+    }
+    if !plan.items.is_empty() {
+        let mut tw = TabWriter::new(&mut *w).padding(2);
+        writeln!(&mut tw, "ACTION\tTITLE\tPATH")?;
+        for item in &plan.items {
+            let path = if item.device_path.as_os_str().is_empty() {
+                "-".to_string()
+            } else {
+                item.device_path.display().to_string()
+            };
+            writeln!(
+                &mut tw,
+                "{action}\t{title}\t{path}",
+                action = sync_action_label(item),
+                title = item.title,
+            )?;
+        }
+        tw.flush()?;
+    }
+    if !plan.conflicts.is_empty() {
+        writeln!(w, "\nConflicts (resolve manually with push/pull):")?;
+        for c in &plan.conflicts {
+            let ids = c
+                .candidates
+                .iter()
+                .map(|id| format!("#{id}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(
+                w,
+                "  {} — \"{}\" matches {}",
+                c.device_path.display(),
+                c.title,
+                ids
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct SyncItemJson<'a> {
+    action: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    book_id: Option<i64>,
+    title: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_path: Option<&'a Path>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct SyncConflictJson<'a> {
+    action: &'a str,
+    device_path: &'a Path,
+    title: &'a str,
+    candidates: &'a [i64],
+}
+
+pub fn render_sync_plan_jsonl<W: Write>(plan: &SyncPlan, w: &mut W) -> io::Result<()> {
+    for item in &plan.items {
+        let device_path = if item.device_path.as_os_str().is_empty() {
+            None
+        } else {
+            Some(item.device_path.as_path())
+        };
+        let value = SyncItemJson {
+            action: item.direction.as_str(),
+            reason: item.push_reason.map(|r| r.as_str()),
+            book_id: item.book_id,
+            title: &item.title,
+            device_path,
+            bytes: item.bytes,
+        };
+        serde_json::to_writer(&mut *w, &value)?;
+        writeln!(w)?;
+    }
+    for c in &plan.conflicts {
+        let value = SyncConflictJson {
+            action: "conflict",
+            device_path: &c.device_path,
+            title: &c.title,
+            candidates: &c.candidates,
+        };
+        serde_json::to_writer(&mut *w, &value)?;
+        writeln!(w)?;
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct AliasJson<'a> {
     action: &'a str,
@@ -949,7 +1062,92 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device::sync::{Conflict, Direction, PushReason, SyncItem, SyncPlan};
     use std::path::PathBuf;
+
+    fn push_item(title: &str, reason: PushReason, path: &str) -> SyncItem {
+        SyncItem {
+            direction: Direction::Push,
+            book_id: Some(1),
+            title: title.to_string(),
+            device_path: PathBuf::from(path),
+            push_reason: Some(reason),
+            bytes: None,
+        }
+    }
+
+    #[test]
+    fn sync_plan_human_empty_says_in_sync() {
+        let mut buf = Vec::new();
+        render_sync_plan_human(
+            &SyncPlan {
+                items: vec![],
+                conflicts: vec![],
+            },
+            &mut buf,
+        )
+        .unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "Already in sync.\n");
+    }
+
+    #[test]
+    fn sync_plan_human_labels_actions_and_conflicts() {
+        let plan = SyncPlan {
+            items: vec![
+                SyncItem {
+                    direction: Direction::Pull,
+                    book_id: None,
+                    title: "Strange".to_string(),
+                    device_path: PathBuf::from("documents/Strange.txt"),
+                    push_reason: None,
+                    bytes: Some(10),
+                },
+                push_item("Dune", PushReason::NotOnDevice, ""),
+                push_item("Solaris", PushReason::Modified, "documents/Solaris.txt"),
+            ],
+            conflicts: vec![Conflict {
+                device_path: PathBuf::from("documents/Dup.txt"),
+                title: "Dup".to_string(),
+                candidates: vec![7, 9],
+            }],
+        };
+        let mut buf = Vec::new();
+        render_sync_plan_human(&plan, &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("pull"));
+        assert!(text.contains("push (new)"));
+        assert!(text.contains("push (modified)"));
+        // A not-on-device push has no device path yet.
+        assert!(text.contains("Dune"));
+        assert!(text.contains("Conflicts"));
+        assert!(text.contains("#7, #9"));
+    }
+
+    #[test]
+    fn sync_plan_jsonl_emits_one_object_per_item_and_conflict() {
+        let plan = SyncPlan {
+            items: vec![push_item("Dune", PushReason::NotOnDevice, "")],
+            conflicts: vec![Conflict {
+                device_path: PathBuf::from("documents/Dup.txt"),
+                title: "Dup".to_string(),
+                candidates: vec![7, 9],
+            }],
+        };
+        let mut buf = Vec::new();
+        render_sync_plan_jsonl(&plan, &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let item: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(item["action"], "push");
+        assert_eq!(item["reason"], "not_on_device");
+        assert_eq!(item["title"], "Dune");
+        // Empty device path is omitted, not emitted as "".
+        assert!(item.get("device_path").is_none());
+        let conflict: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(conflict["action"], "conflict");
+        assert_eq!(conflict["candidates"], serde_json::json!([7, 9]));
+    }
 
     fn row(name: &str, path: &str, current: bool, missing: bool) -> CatalogRow {
         CatalogRow {
