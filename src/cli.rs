@@ -8,6 +8,7 @@ pub mod dedup;
 pub mod device;
 pub mod edit;
 pub mod embed;
+pub mod groups;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -301,6 +302,11 @@ pub enum Command {
         )]
         keep: bool,
     },
+    #[command(about = "List book groups (folders) by a metadata field")]
+    Groups {
+        #[arg(long, value_enum, help = "Field to group by: author, tag, or rating")]
+        by: GroupByArg,
+    },
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
@@ -308,6 +314,23 @@ pub enum DedupBy {
     Hash,
     Meta,
     All,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum GroupByArg {
+    Author,
+    Tag,
+    Rating,
+}
+
+impl From<GroupByArg> for crate::catalog::groups::GroupBy {
+    fn from(by: GroupByArg) -> Self {
+        match by {
+            GroupByArg::Author => crate::catalog::groups::GroupBy::Author,
+            GroupByArg::Tag => crate::catalog::groups::GroupBy::Tag,
+            GroupByArg::Rating => crate::catalog::groups::GroupBy::Rating,
+        }
+    }
 }
 
 impl From<DedupBy> for crate::dedup::DetectBy {

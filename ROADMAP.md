@@ -450,6 +450,36 @@ Exploração (best-effort, pode escorregar pra backlog):
       ASIN/checksum do arquivo e instável entre firmwares — sem
       garantia de round-trip. Documentar até onde dá pra ir.
 
+## v0.11 — Navegação por grupos (browse)
+
+Navegar o catálogo como se fosse uma árvore de pastas: um campo de
+metadado vira o "agrupador" e cada valor distinto vira uma pasta. É um
+**modo da própria tela Library** (não uma seção nova) — dentro de uma
+pasta valem as mesmas colunas e as mesmas ações da listagem normal.
+
+O escopo de uma pasta é **igualdade exata** (a pasta "Jane Austen"
+contém só `author = 'Jane Austen'`), diferente do filtro de busca, que é
+substring. `author` é coluna única (um livro cai em uma pasta);
+`tags` é many-to-many (um livro aparece em várias pastas).
+
+- [x] `cdx groups --by author|tag|rating` — lista os grupos do catálogo
+      atual (valor + contagem de livros), humano e `--json` (JSONL, um
+      objeto por grupo; `value: null` no grupo catch-all — sem autor /
+      sem tags / sem rating). Catálogo vazio em `--json` não imprime nada.
+- [x] TUI: modo agrupado na Library — `g` abre o seletor de agrupador
+      (Author / Tags / Rating / Off); o nível de "pastas" lista valor +
+      contagem (`↑↓`/`jk` navegam, Enter entra). O módulo de domínio
+      (`catalog::groups`) é compartilhado com o CLI.
+- [x] TUI: dentro de uma pasta a tabela reusa as colunas e ações da
+      listagem (inspect/edit/open/push/delete/columns/embed); um
+      breadcrumb no cabeçalho mostra o grupo atual e a contagem. `Esc`
+      desce uma camada por vez: limpa o filtro → volta às pastas →
+      sai do agrupamento → volta à welcome.
+- [x] TUI: `/` dentro de uma pasta filtra os livros do grupo em memória,
+      sem alargar o escopo exato da pasta.
+- [ ] (follow-up) agrupar por `publisher`/`language` — exige estender
+      `SearchFilters`/`FilterCriteria`/`handle_search`; fora desta entrega.
+
 ## v1.0 — Estável
 
 - [ ] Man page (`cdx.1`)

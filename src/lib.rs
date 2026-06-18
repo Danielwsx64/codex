@@ -172,6 +172,12 @@ pub fn run() -> Result<()> {
             cli.catalog.as_deref(),
             cli.json,
         ),
+        Some(Command::Groups { by }) => cli::groups::dispatch(
+            by.into(),
+            cli.data_dir.as_deref(),
+            cli.catalog.as_deref(),
+            cli.json,
+        ),
         None => print_welcome(),
     }
 }

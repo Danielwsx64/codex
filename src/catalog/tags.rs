@@ -6,9 +6,35 @@ pub struct TagDelta {
     pub unchanged: Vec<String>,
 }
 
+// Tag-list separators. Different sources delimit differently — Calibre and many
+// EPUB/MOBI exports use `;`, others use `,` — so both are accepted everywhere a
+// tag list is parsed (file metadata, the `cdx tag` CLI, the TUI edit field).
+const SEPARATORS: &[char] = &[',', ';'];
+
 pub fn normalize(input: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for piece in input.split(',') {
+    push_split(input, &mut out);
+    out
+}
+
+pub fn normalize_many<I, S>(values: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut out: Vec<String> = Vec::new();
+    for v in values {
+        // Each incoming value may itself be a delimited list (e.g. a single
+        // `<dc:subject>` carrying `a; b; c`), so split it too.
+        push_split(v.as_ref(), &mut out);
+    }
+    out
+}
+
+// Split on any separator, trim, drop empties, and dedup case-insensitively
+// against what is already collected (preserving first-seen casing/order).
+fn push_split(input: &str, out: &mut Vec<String>) {
+    for piece in input.split(SEPARATORS) {
         let trimmed = piece.trim();
         if trimmed.is_empty() {
             continue;
@@ -21,29 +47,6 @@ pub fn normalize(input: &str) -> Vec<String> {
         }
         out.push(trimmed.to_string());
     }
-    out
-}
-
-pub fn normalize_many<I, S>(values: I) -> Vec<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let mut out: Vec<String> = Vec::new();
-    for v in values {
-        let trimmed = v.as_ref().trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if out
-            .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(trimmed))
-        {
-            continue;
-        }
-        out.push(trimmed.to_string());
-    }
-    out
 }
 
 pub fn sync(tx: &Transaction<'_>, book_id: i64, names: &[String]) -> rusqlite::Result<()> {
@@ -178,6 +181,27 @@ mod tests {
     fn normalize_many_handles_pre_split_strings() {
         let input = vec!["a", " b ", "A", "", "c"];
         assert_eq!(normalize_many(input), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn normalize_splits_on_semicolons_and_mixed_separators() {
+        assert_eq!(
+            normalize("fiction; sci-fi ; space opera"),
+            vec!["fiction", "sci-fi", "space opera"]
+        );
+        // Both separators may appear in the same list.
+        assert_eq!(
+            normalize("fiction, sci-fi; fantasy"),
+            vec!["fiction", "sci-fi", "fantasy"]
+        );
+    }
+
+    #[test]
+    fn normalize_many_splits_embedded_separators_in_each_value() {
+        // A single EPUB/MOBI subject carrying a `;`-delimited list becomes
+        // several tags rather than one merged tag.
+        let input = vec!["Fiction; Sci-Fi", "Drama"];
+        assert_eq!(normalize_many(input), vec!["Fiction", "Sci-Fi", "Drama"]);
     }
 
     #[test]

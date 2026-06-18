@@ -10,6 +10,7 @@ use crate::catalog::books::{
 };
 use crate::catalog::columns::LibraryColumn;
 use crate::catalog::devices::AliasOutcome;
+use crate::catalog::groups::{Group, GroupBy};
 use crate::catalog::handlers::{AddOutcome, CatalogRow, InitOutcome, RmOutcome, UseOutcome};
 use crate::dedup::SuggestionReason;
 use crate::device::books::DeviceBook;
@@ -798,6 +799,48 @@ pub fn render_dedup_jsonl<W: Write>(groups: &[DedupGroupView<'_>], w: &mut W) ->
                     suggested: m.suggested,
                 })
                 .collect(),
+        };
+        serde_json::to_writer(&mut *w, &value)?;
+        writeln!(w)?;
+    }
+    Ok(())
+}
+
+// Label shown for the catch-all group (books with no value for the field).
+pub fn empty_group_label(by: GroupBy) -> &'static str {
+    match by {
+        GroupBy::Author => "(no author)",
+        GroupBy::Tag => "(untagged)",
+        GroupBy::Rating => "(unrated)",
+    }
+}
+
+pub fn render_groups_human<W: Write>(by: GroupBy, groups: &[Group], w: &mut W) -> io::Result<()> {
+    if groups.is_empty() {
+        writeln!(w, "No groups found.")?;
+        return Ok(());
+    }
+    let mut tw = TabWriter::new(w).padding(2);
+    writeln!(&mut tw, "GROUP\tCOUNT")?;
+    for g in groups {
+        let label = g.value.as_deref().unwrap_or_else(|| empty_group_label(by));
+        writeln!(&mut tw, "{label}\t{count}", count = g.count)?;
+    }
+    tw.flush()?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct GroupJson<'a> {
+    value: Option<&'a str>,
+    count: usize,
+}
+
+pub fn render_groups_jsonl<W: Write>(groups: &[Group], w: &mut W) -> io::Result<()> {
+    for g in groups {
+        let value = GroupJson {
+            value: g.value.as_deref(),
+            count: g.count,
         };
         serde_json::to_writer(&mut *w, &value)?;
         writeln!(w)?;

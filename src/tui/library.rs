@@ -14,6 +14,8 @@ use tui_input::Input;
 
 use crate::catalog::books::{self, Book, EmbedStatus};
 use crate::catalog::columns::LibraryColumn;
+use crate::catalog::groups::{self, GroupBy};
+use crate::catalog::render::empty_group_label;
 use crate::catalog::settings;
 use crate::catalog::{self, devices};
 use crate::config::Registry;
@@ -74,6 +76,10 @@ const TABLE_BINDINGS: &[Binding] = &[
         desc: "find duplicate books",
     },
     Binding {
+        keys: "g",
+        desc: "group into folders (author/tags/rating)",
+    },
+    Binding {
         keys: "/",
         desc: "quick filter (Esc clears when filtered)",
     },
@@ -82,6 +88,58 @@ const TABLE_BINDINGS: &[Binding] = &[
         desc: "advanced filter wizard",
     },
 ];
+
+const GROUP_LIST_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "↑↓ / j k",
+        desc: "move between groups",
+    },
+    Binding {
+        keys: "Enter",
+        desc: "open group",
+    },
+    Binding {
+        keys: "g",
+        desc: "change grouping",
+    },
+    Binding {
+        keys: "Esc",
+        desc: "leave grouping (back to flat list)",
+    },
+];
+
+const GROUP_CHOOSER_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "↑↓ / j k",
+        desc: "move cursor",
+    },
+    Binding {
+        keys: "Enter",
+        desc: "apply grouping",
+    },
+    Binding {
+        keys: "Esc",
+        desc: "cancel",
+    },
+];
+
+// The grouping fields offered by the `g` chooser, plus an "off" entry that
+// drops back to the flat list. Order drives the chooser layout.
+const GROUP_OPTIONS: &[(Option<GroupBy>, &str)] = &[
+    (Some(GroupBy::Author), "Author"),
+    (Some(GroupBy::Tag), "Tags"),
+    (Some(GroupBy::Rating), "Rating"),
+    (None, "Off (flat list)"),
+];
+
+// Display name for a grouping field, used in the header breadcrumb.
+fn group_field_label(by: GroupBy) -> &'static str {
+    match by {
+        GroupBy::Author => "Author",
+        GroupBy::Tag => "Tags",
+        GroupBy::Rating => "Rating",
+    }
+}
 
 const FILTER_BINDINGS: &[Binding] = &[
     Binding {
@@ -273,9 +331,19 @@ const COLUMNS_BINDINGS: &[Binding] = &[
 
 pub fn help_sections(state: &State) -> Vec<Section> {
     match state.overlay.as_ref() {
-        None => vec![Section {
-            title: "Library",
-            bindings: TABLE_BINDINGS,
+        None => match state.view() {
+            View::GroupList => vec![Section {
+                title: "Groups",
+                bindings: GROUP_LIST_BINDINGS,
+            }],
+            _ => vec![Section {
+                title: "Library",
+                bindings: TABLE_BINDINGS,
+            }],
+        },
+        Some(Overlay::GroupBy { .. }) => vec![Section {
+            title: "Group by",
+            bindings: GROUP_CHOOSER_BINDINGS,
         }],
         Some(Overlay::Inspect { .. }) => vec![Section {
             title: "Inspect",
@@ -349,6 +417,15 @@ pub struct State {
     pub cwd: PathBuf,
     pub columns: Vec<LibraryColumn>,
     pub filter: Option<ActiveFilter>,
+    // Active "folder" grouping. None = flat list (the historical behaviour).
+    pub grouping: Option<GroupBy>,
+    // The folders for the active grouping; populated by refresh when grouping is set.
+    pub groups: Vec<groups::Group>,
+    // Cursor within `groups`, kept separate from `cursor` so drilling into a
+    // group and back preserves the folder position.
+    pub group_cursor: usize,
+    // Some when drilled into a group: `rows` then holds that group's books.
+    pub scope: Option<GroupScope>,
     // Presence of each book against the current device, keyed by book id. Empty
     // unless a device is current+connected; drives the leading indicator column.
     pub device_presence: HashMap<i64, device::presence::LibraryPresence>,
@@ -362,6 +439,22 @@ pub struct State {
 pub struct CatalogContext {
     pub name: String,
     pub dir: PathBuf,
+}
+
+// Which "folder" the user has drilled into. `value` None is the catch-all group
+// (no author / untagged / unrated); `label` is its display string.
+#[derive(Debug, Clone)]
+pub struct GroupScope {
+    pub value: Option<String>,
+    pub label: String,
+}
+
+// The three mutually exclusive shapes the Library can render in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Flat,
+    GroupList,
+    GroupContents,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -429,6 +522,9 @@ pub enum Overlay {
     Columns(columns::State),
     Filter(Input),
     Search(Box<search::State>),
+    GroupBy {
+        cursor: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -496,6 +592,10 @@ impl State {
             cwd,
             columns: LibraryColumn::DEFAULT.to_vec(),
             filter: None,
+            grouping: None,
+            groups: Vec::new(),
+            group_cursor: 0,
+            scope: None,
             device_presence: HashMap::new(),
             current_device_label: None,
         };
@@ -510,13 +610,56 @@ impl State {
         state
     }
 
+    pub fn view(&self) -> View {
+        match (self.grouping, &self.scope) {
+            (None, _) => View::Flat,
+            (Some(_), None) => View::GroupList,
+            (Some(_), Some(_)) => View::GroupContents,
+        }
+    }
+
     fn refresh(&mut self) {
         let Some(ctx) = self.catalog.clone() else {
             return;
         };
-        let result = match &self.filter {
-            Some(f) => search_rows(&ctx.dir, &f.criteria),
-            None => list_rows(&ctx.dir),
+
+        // Reload the folder list whenever a grouping is active.
+        if let Some(by) = self.grouping {
+            match group_list(&ctx.dir, by) {
+                Ok(groups) => {
+                    self.groups = groups;
+                    if self.group_cursor >= self.groups.len() {
+                        self.group_cursor = self.groups.len().saturating_sub(1);
+                    }
+                }
+                Err(err) => {
+                    self.groups.clear();
+                    self.group_cursor = 0;
+                    self.load_error = Some(err);
+                }
+            }
+        } else {
+            self.groups.clear();
+        }
+
+        let result = match (self.grouping, &self.scope) {
+            // Folder list view: the book rows are not shown, so skip loading them.
+            (Some(_), None) => Ok(Vec::new()),
+            // Inside a group: exact membership, then the active filter applied
+            // in memory so the group scope is never widened by the search SQL.
+            (Some(by), Some(scope)) => {
+                group_rows(&ctx.dir, by, scope.value.as_deref()).map(|rows| match &self.filter {
+                    Some(f) => rows
+                        .into_iter()
+                        .filter(|b| matches_criteria(b, &f.criteria))
+                        .collect(),
+                    None => rows,
+                })
+            }
+            (None, _) => match &self.filter {
+                Some(f) => search_rows(&ctx.dir, &f.criteria),
+                None => list_rows(&ctx.dir),
+            },
         };
         match result {
             Ok(rows) => {
@@ -553,6 +696,9 @@ pub fn handle_key(state: &mut State, key: KeyEvent) -> LibraryAction {
     if state.overlay.is_some() {
         return handle_overlay_key(state, key);
     }
+    if state.view() == View::GroupList {
+        return handle_group_list_key(state, key);
+    }
     match key.code {
         KeyCode::Down | KeyCode::Char('j') => {
             if !state.rows.is_empty() {
@@ -583,12 +729,19 @@ pub fn handle_key(state: &mut State, key: KeyEvent) -> LibraryAction {
         KeyCode::Char('s') => LibraryAction::OpenDeviceSync,
         KeyCode::Char('d') | KeyCode::Delete => open_confirm_rm(state),
         KeyCode::Char('D') => LibraryAction::OpenDuplicates,
+        KeyCode::Char('g') => open_group_chooser(state),
         KeyCode::Char('/') => open_filter_input(state),
         KeyCode::Esc => {
-            // In filtered mode, Esc drops the filter and returns to the full
-            // list; only an unfiltered Library hands control back to Welcome.
+            // Esc peels one layer at a time: an active filter clears first, then
+            // a group scope returns to the folder list, and only an unfiltered,
+            // ungrouped Library hands control back to Welcome.
             if state.filter.is_some() {
                 state.filter = None;
+                state.refresh();
+                LibraryAction::None
+            } else if state.scope.is_some() {
+                state.scope = None;
+                state.cursor = 0;
                 state.refresh();
                 LibraryAction::None
             } else {
@@ -596,6 +749,106 @@ pub fn handle_key(state: &mut State, key: KeyEvent) -> LibraryAction {
             }
         }
         KeyCode::Char(':') => LibraryAction::OpenPalette,
+        _ => LibraryAction::None,
+    }
+}
+
+fn handle_group_list_key(state: &mut State, key: KeyEvent) -> LibraryAction {
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => {
+            if !state.groups.is_empty() {
+                state.group_cursor = (state.group_cursor + 1) % state.groups.len();
+            }
+            LibraryAction::None
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if !state.groups.is_empty() {
+                state.group_cursor =
+                    (state.group_cursor + state.groups.len() - 1) % state.groups.len();
+            }
+            LibraryAction::None
+        }
+        KeyCode::Enter => enter_group(state),
+        KeyCode::Char('g') => open_group_chooser(state),
+        KeyCode::Esc => {
+            // Leaving the folder list drops grouping entirely, back to the flat list.
+            apply_grouping(state, None);
+            LibraryAction::None
+        }
+        KeyCode::Char(':') => LibraryAction::OpenPalette,
+        _ => LibraryAction::None,
+    }
+}
+
+fn enter_group(state: &mut State) -> LibraryAction {
+    let Some(by) = state.grouping else {
+        return LibraryAction::None;
+    };
+    let Some(group) = state.groups.get(state.group_cursor) else {
+        return LibraryAction::None;
+    };
+    let value = group.value.clone();
+    let label = value
+        .clone()
+        .unwrap_or_else(|| empty_group_label(by).to_string());
+    state.scope = Some(GroupScope { value, label });
+    state.cursor = 0;
+    // A freshly opened group starts unfiltered.
+    state.filter = None;
+    state.refresh();
+    LibraryAction::None
+}
+
+fn open_group_chooser(state: &mut State) -> LibraryAction {
+    if state.catalog.is_none() {
+        return LibraryAction::Status(StatusMessage::error("no catalog selected"));
+    }
+    // Preselect the active grouping, or Author when currently flat — never the
+    // "Off" entry, so a plain `g` Enter starts grouping instead of cancelling it.
+    let cursor = match state.grouping {
+        Some(by) => GROUP_OPTIONS
+            .iter()
+            .position(|(opt, _)| *opt == Some(by))
+            .unwrap_or(0),
+        None => 0,
+    };
+    state.overlay = Some(Overlay::GroupBy { cursor });
+    LibraryAction::None
+}
+
+// Switch the active grouping (or turn it off), resetting scope/filter/cursors.
+fn apply_grouping(state: &mut State, choice: Option<GroupBy>) {
+    state.grouping = choice;
+    state.scope = None;
+    state.group_cursor = 0;
+    state.cursor = 0;
+    state.filter = None;
+    state.refresh();
+}
+
+fn handle_group_chooser_key(state: &mut State, key: KeyEvent) -> LibraryAction {
+    let Some(Overlay::GroupBy { cursor }) = state.overlay.as_mut() else {
+        return LibraryAction::None;
+    };
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => {
+            *cursor = (*cursor + 1) % GROUP_OPTIONS.len();
+            LibraryAction::None
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            *cursor = (*cursor + GROUP_OPTIONS.len() - 1) % GROUP_OPTIONS.len();
+            LibraryAction::None
+        }
+        KeyCode::Enter => {
+            let choice = GROUP_OPTIONS[*cursor].0;
+            state.overlay = None;
+            apply_grouping(state, choice);
+            LibraryAction::None
+        }
+        KeyCode::Esc => {
+            state.overlay = None;
+            LibraryAction::None
+        }
         _ => LibraryAction::None,
     }
 }
@@ -644,6 +897,7 @@ fn handle_overlay_key(state: &mut State, key: KeyEvent) -> LibraryAction {
         Some(Overlay::Columns(_)) => handle_columns_key(state, key),
         Some(Overlay::Filter(_)) => handle_filter_key(state, key),
         Some(Overlay::Search(_)) => handle_search_key(state, key),
+        Some(Overlay::GroupBy { .. }) => handle_group_chooser_key(state, key),
         None => LibraryAction::None,
     }
 }
@@ -1314,6 +1568,63 @@ fn search_rows(dir: &Path, criteria: &FilterCriteria) -> std::result::Result<Vec
     books::handle_search(&conn, &criteria.as_filters()).map_err(|e| e.to_string())
 }
 
+fn group_list(dir: &Path, by: GroupBy) -> std::result::Result<Vec<groups::Group>, String> {
+    let conn = catalog::open_existing(dir).map_err(|e| e.to_string())?;
+    groups::list_groups(&conn, by).map_err(|e| e.to_string())
+}
+
+fn group_rows(
+    dir: &Path,
+    by: GroupBy,
+    value: Option<&str>,
+) -> std::result::Result<Vec<Book>, String> {
+    let conn = catalog::open_existing(dir).map_err(|e| e.to_string())?;
+    groups::books_in_group(&conn, by, value).map_err(|e| e.to_string())
+}
+
+// In-memory predicate mirroring `handle_search` semantics, used to filter the
+// books of a single group without widening the group's exact scope via SQL.
+fn matches_criteria(book: &Book, c: &FilterCriteria) -> bool {
+    let contains = |hay: Option<&str>, needle: &str| {
+        hay.map(|h| h.to_lowercase().contains(needle))
+            .unwrap_or(false)
+    };
+    if let Some(query) = &c.query {
+        for token in query.split_whitespace() {
+            let token = token.to_lowercase();
+            let hit = book.title.to_lowercase().contains(&token)
+                || contains(book.author.as_deref(), &token)
+                || book.tags.iter().any(|t| t.to_lowercase().contains(&token));
+            if !hit {
+                return false;
+            }
+        }
+    }
+    if let Some(author) = &c.author {
+        if !contains(book.author.as_deref(), &author.to_lowercase()) {
+            return false;
+        }
+    }
+    for tag in &c.tags {
+        let tag = tag.to_lowercase();
+        if !book.tags.iter().any(|t| t.to_lowercase().contains(&tag)) {
+            return false;
+        }
+    }
+    if let Some(series) = &c.series {
+        if !contains(book.series_name.as_deref(), &series.to_lowercase()) {
+            return false;
+        }
+    }
+    if let Some(range) = &c.rating {
+        match book.rating {
+            Some(r) if r >= range.min && r <= range.max => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
 // Presence of every catalog book against the current device, or an empty map
 // when no single device is current+connected. Advisory display only: any error
 // (no catalog, scan failure, presence query) collapses to empty so the library
@@ -1438,7 +1749,28 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         title,
         Style::default().add_modifier(Modifier::BOLD),
     )];
-    if let Some(filter) = &state.filter {
+    match (state.grouping, &state.scope) {
+        (Some(by), None) => header_spans.push(Span::styled(
+            format!(" · grouped by {}", group_field_label(by)),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        (Some(by), Some(scope)) => header_spans.push(Span::styled(
+            format!(
+                " · {}: {} ({})",
+                group_field_label(by),
+                scope.label,
+                state.rows.len()
+            ),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        _ => {}
+    }
+    // The filter never applies to the folder list, so its badge is hidden there.
+    if let (Some(filter), false) = (&state.filter, state.view() == View::GroupList) {
         header_spans.push(Span::styled(
             format!(
                 " · filtered ({}): {}",
@@ -1477,8 +1809,21 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         )))
         .alignment(Alignment::Center);
         frame.render_widget(p, layout[1]);
+    } else if state.view() == View::GroupList {
+        if state.groups.is_empty() {
+            let p = Paragraph::new(Line::from(Span::styled(
+                "no groups for this field — Esc to leave grouping",
+                Style::default().fg(Color::DarkGray),
+            )))
+            .alignment(Alignment::Center);
+            frame.render_widget(p, layout[1]);
+        } else {
+            render_group_list(frame, layout[1], state);
+        }
     } else if state.rows.is_empty() {
-        let msg = if state.filter.is_some() {
+        let msg = if state.scope.is_some() {
+            "empty group — Esc to go back"
+        } else if state.filter.is_some() {
             "no matches for filter — Esc to clear"
         } else {
             "no books yet — press `a` to import one"
@@ -1510,8 +1855,78 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         Some(Overlay::Columns(picker)) => columns::render(frame, area, picker),
         Some(Overlay::Filter(input)) => render_filter_bar(frame, area, input),
         Some(Overlay::Search(wizard)) => search::render(frame, area, wizard.as_ref()),
+        Some(Overlay::GroupBy { cursor }) => render_group_chooser(frame, area, *cursor),
         None => {}
     }
+}
+
+fn render_group_list(frame: &mut Frame<'_>, area: Rect, state: &State) {
+    let Some(by) = state.grouping else {
+        return;
+    };
+    let header = Row::new(vec![Cell::from("GROUP"), Cell::from("BOOKS")]).style(
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    );
+    let rows: Vec<Row<'_>> = state
+        .groups
+        .iter()
+        .map(|g| {
+            let label = g
+                .value
+                .clone()
+                .unwrap_or_else(|| empty_group_label(by).to_string());
+            Row::new(vec![Cell::from(label), Cell::from(g.count.to_string())])
+        })
+        .collect();
+    let widths = [Constraint::Min(20), Constraint::Length(8)];
+    let table = Table::new(rows, widths).header(header).highlight_style(
+        Style::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    );
+    let mut s = TableState::default();
+    s.select(Some(
+        state.group_cursor.min(state.groups.len().saturating_sub(1)),
+    ));
+    frame.render_stateful_widget(table, area, &mut s);
+}
+
+fn render_group_chooser(frame: &mut Frame<'_>, area: Rect, cursor: usize) {
+    let modal_title = " Group by ";
+    let max_label = GROUP_OPTIONS
+        .iter()
+        .map(|(_, label)| label.chars().count())
+        .max()
+        .unwrap_or(0);
+    let target_w = (max_label + 6)
+        .max(modal_title.chars().count() + 4)
+        .min(area.width as usize) as u16;
+    let target_h = (GROUP_OPTIONS.len() as u16 + 2).min(area.height);
+    let rect = centered_rect(target_w, target_h, area);
+
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(modal_title)
+        .title_alignment(Alignment::Center)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let items: Vec<ListItem> = GROUP_OPTIONS
+        .iter()
+        .map(|(_, label)| ListItem::new(Line::from(format!(" {label}"))))
+        .collect();
+    let list = List::new(items).highlight_style(
+        Style::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    );
+    let mut list_state = ListState::default();
+    list_state.select(Some(cursor.min(GROUP_OPTIONS.len() - 1)));
+    frame.render_stateful_widget(list, inner, &mut list_state);
 }
 
 fn filter_summary(filter: &ActiveFilter) -> String {
@@ -3135,5 +3550,133 @@ mod tests {
             }
             other => panic!("expected error status, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn g_opens_group_chooser_and_applies_grouping() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book(&cat, "A", Some("Jane Austen"));
+        insert_book(&cat, "B", Some("Mary Shelley"));
+        let mut state = State::load(&reg);
+        assert_eq!(state.view(), View::Flat);
+
+        // `g` opens the chooser; Author is the first option.
+        handle_key(&mut state, key(KeyCode::Char('g')));
+        assert!(matches!(
+            state.overlay,
+            Some(Overlay::GroupBy { cursor: 0 })
+        ));
+
+        // Enter applies the grouping → folder list view with one folder per author.
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(state.overlay.is_none());
+        assert_eq!(state.view(), View::GroupList);
+        assert_eq!(state.grouping, Some(GroupBy::Author));
+        assert_eq!(state.groups.len(), 2);
+    }
+
+    #[test]
+    fn enter_drills_into_group_and_scopes_rows() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book(&cat, "Emma", Some("Jane Austen"));
+        insert_book(&cat, "Persuasion", Some("Jane Austen"));
+        insert_book(&cat, "Frankenstein", Some("Mary Shelley"));
+        let mut state = State::load(&reg);
+
+        // Group by author, drill into the first folder (alphabetical: Jane Austen).
+        handle_key(&mut state, key(KeyCode::Char('g')));
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(state.view(), View::GroupList);
+        handle_key(&mut state, key(KeyCode::Enter));
+
+        assert_eq!(state.view(), View::GroupContents);
+        let scope = state.scope.as_ref().expect("scope set");
+        assert_eq!(scope.label, "Jane Austen");
+        // Exactly the two Austen books, not Shelley's.
+        assert_eq!(state.rows.len(), 2);
+        assert!(state
+            .rows
+            .iter()
+            .all(|b| b.author.as_deref() == Some("Jane Austen")));
+    }
+
+    #[test]
+    fn esc_layers_from_group_contents_back_to_flat() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book(&cat, "Emma", Some("Jane Austen"));
+        let mut state = State::load(&reg);
+
+        handle_key(&mut state, key(KeyCode::Char('g')));
+        handle_key(&mut state, key(KeyCode::Enter)); // apply grouping → folders
+        handle_key(&mut state, key(KeyCode::Enter)); // drill into first folder
+        assert_eq!(state.view(), View::GroupContents);
+
+        // First Esc: back to the folder list.
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+        assert!(matches!(action, LibraryAction::None));
+        assert_eq!(state.view(), View::GroupList);
+
+        // Second Esc: leave grouping entirely.
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+        assert!(matches!(action, LibraryAction::None));
+        assert_eq!(state.view(), View::Flat);
+
+        // Third Esc on a flat, unfiltered Library hands control back to Welcome.
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+        assert!(matches!(action, LibraryAction::Back));
+    }
+
+    #[test]
+    fn quick_filter_inside_group_narrows_in_memory_without_widening_scope() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book(&cat, "Emma", Some("Jane Austen"));
+        insert_book(&cat, "Persuasion", Some("Jane Austen"));
+        insert_book(&cat, "Emma Goldman Reader", Some("Mary Shelley"));
+        let mut state = State::load(&reg);
+
+        handle_key(&mut state, key(KeyCode::Char('g')));
+        handle_key(&mut state, key(KeyCode::Enter)); // folders
+        handle_key(&mut state, key(KeyCode::Enter)); // into Jane Austen
+        assert_eq!(state.rows.len(), 2);
+
+        // `/emma` filters within the group; Shelley's "Emma..." stays excluded.
+        handle_key(&mut state, key(KeyCode::Char('/')));
+        for ch in "emma".chars() {
+            handle_key(&mut state, key(KeyCode::Char(ch)));
+        }
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(state.rows.len(), 1);
+        assert_eq!(state.rows[0].title, "Emma");
+
+        // Esc clears the filter first, restoring the full group; scope intact.
+        handle_key(&mut state, key(KeyCode::Esc));
+        assert!(state.filter.is_none());
+        assert_eq!(state.view(), View::GroupContents);
+        assert_eq!(state.rows.len(), 2);
+    }
+
+    #[test]
+    fn chooser_off_returns_to_flat_list() {
+        let (_tmp, cat, reg) = setup_with_catalog();
+        insert_book(&cat, "Emma", Some("Jane Austen"));
+        let mut state = State::load(&reg);
+
+        handle_key(&mut state, key(KeyCode::Char('g')));
+        handle_key(&mut state, key(KeyCode::Enter)); // group by author
+        assert_eq!(state.view(), View::GroupList);
+
+        // Re-open the chooser; the current mode (Author) is preselected.
+        handle_key(&mut state, key(KeyCode::Char('g')));
+        assert!(matches!(
+            state.overlay,
+            Some(Overlay::GroupBy { cursor: 0 })
+        ));
+        // Move to the "Off" entry (last option) and apply.
+        for _ in 0..(GROUP_OPTIONS.len() - 1) {
+            handle_key(&mut state, key(KeyCode::Down));
+        }
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(state.view(), View::Flat);
+        assert_eq!(state.grouping, None);
     }
 }

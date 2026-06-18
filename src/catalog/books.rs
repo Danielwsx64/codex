@@ -1029,7 +1029,7 @@ fn fetch_by_id(conn: &Connection, id: i64) -> Result<Book> {
     Ok(book)
 }
 
-fn row_to_book(row: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
+pub(crate) fn row_to_book(row: &rusqlite::Row<'_>) -> rusqlite::Result<Book> {
     let embed_status_raw: String = row.get(14)?;
     let embed_status = EmbedStatus::parse_label(&embed_status_raw).unwrap_or(EmbedStatus::Pending);
     Ok(Book {
