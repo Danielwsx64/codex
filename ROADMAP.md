@@ -225,7 +225,7 @@ A identidade de um livro entre catálogo e device tem duas camadas:
       sempre manual" deste milestone. Sempre confirma antes de apagar;
       `--yes` pula a confirmação (script). `--json` resume o que foi
       removido (path + bytes liberados)
-- [ ] TUI: ação de limpeza na visão do device — Space marca livros,
+- [x] TUI: ação de limpeza na visão do device — Space marca livros,
       confirma e apaga (espelha `cdx device clean`); a navegação já
       resolve a escolha de device sem flag
 - [x] TUI: tela "Devices" — lista devices (alias, conectado ou não);

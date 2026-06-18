@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crossterm::event::{Event, KeyCode, KeyEvent};
@@ -13,6 +14,7 @@ use crate::catalog::{self, devices};
 use crate::config::Registry;
 use crate::device;
 use crate::device::books::Presence;
+use crate::tui::confirm;
 use crate::tui::help::{Binding, Section};
 use crate::tui::widgets::{render_modal, StatusMessage};
 
@@ -37,8 +39,31 @@ const BOOKS_BINDINGS: &[Binding] = &[
         desc: "move selection",
     },
     Binding {
+        keys: "Space",
+        desc: "mark / unmark book",
+    },
+    Binding {
+        keys: "Enter",
+        desc: "clean marked books",
+    },
+    Binding {
         keys: "Esc",
         desc: "back to device list",
+    },
+];
+
+const BOOKS_CONFIRM_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "Enter",
+        desc: "confirm",
+    },
+    Binding {
+        keys: "←→ / Tab",
+        desc: "switch button",
+    },
+    Binding {
+        keys: "Esc",
+        desc: "cancel",
     },
 ];
 
@@ -60,10 +85,14 @@ pub fn help_sections(state: &State) -> Vec<Section> {
             bindings: RENAME_BINDINGS,
         }];
     }
-    match state.view {
+    match &state.view {
         View::List => vec![Section {
             title: "Devices",
             bindings: LIST_BINDINGS,
+        }],
+        View::Books(view) if view.confirm.is_some() => vec![Section {
+            title: "Confirm clean",
+            bindings: BOOKS_CONFIRM_BINDINGS,
         }],
         View::Books(_) => vec![Section {
             title: "Device books",
@@ -98,8 +127,13 @@ pub enum View {
 pub struct BooksView {
     pub serial: String,
     pub alias: String,
+    pub mount: PathBuf,
     pub rows: Vec<device::books::DeviceBook>,
     pub cursor: usize,
+    // Marked books keyed by `device_path` — stable across the re-sort that
+    // `device::books::list` applies after a clean (positional indices are not).
+    pub selected: BTreeSet<PathBuf>,
+    pub confirm: Option<confirm::State>,
 }
 
 #[derive(Debug, Clone)]
@@ -235,8 +269,11 @@ fn open_books(state: &mut State) -> DevicesAction {
             state.view = View::Books(BooksView {
                 serial: row.serial,
                 alias: label,
+                mount,
                 rows,
                 cursor: 0,
+                selected: BTreeSet::new(),
+                confirm: None,
             });
             DevicesAction::None
         }
@@ -314,6 +351,11 @@ fn set_rename_error(state: &mut State, message: String) {
 }
 
 fn handle_books_key(state: &mut State, key: KeyEvent) -> DevicesAction {
+    // While the delete confirmation is open every key drives the dialog — this
+    // also swallows `:`/Space/j/k so the palette can't open over a live confirm.
+    if matches!(&state.view, View::Books(view) if view.confirm.is_some()) {
+        return handle_books_confirm_key(state, key);
+    }
     let View::Books(view) = &mut state.view else {
         return DevicesAction::None;
     };
@@ -330,6 +372,35 @@ fn handle_books_key(state: &mut State, key: KeyEvent) -> DevicesAction {
             }
             DevicesAction::None
         }
+        KeyCode::Char(' ') => {
+            if let Some(book) = view.rows.get(view.cursor) {
+                let path = book.device_path.clone();
+                if !view.selected.remove(&path) {
+                    view.selected.insert(path);
+                }
+            }
+            DevicesAction::None
+        }
+        KeyCode::Enter => {
+            if view.selected.is_empty() {
+                return DevicesAction::Status(StatusMessage::info(
+                    "no books marked — press Space to mark",
+                ));
+            }
+            view.confirm = Some(confirm::State {
+                title: "delete from device".to_string(),
+                message: format!(
+                    "delete {} book(s) from {}?",
+                    view.selected.len(),
+                    view.alias
+                ),
+                ok_label: "[ Delete ]".to_string(),
+                cancel_label: "[ Cancel ]".to_string(),
+                // Destructive: default focus to Cancel so a bare Enter aborts.
+                focus: confirm::Button::Cancel,
+            });
+            DevicesAction::None
+        }
         KeyCode::Esc => {
             state.view = View::List;
             DevicesAction::None
@@ -337,6 +408,62 @@ fn handle_books_key(state: &mut State, key: KeyEvent) -> DevicesAction {
         KeyCode::Char(':') => DevicesAction::OpenPalette,
         _ => DevicesAction::None,
     }
+}
+
+fn handle_books_confirm_key(state: &mut State, key: KeyEvent) -> DevicesAction {
+    let View::Books(view) = &mut state.view else {
+        return DevicesAction::None;
+    };
+    let Some(dialog) = view.confirm.as_mut() else {
+        return DevicesAction::None;
+    };
+    match confirm::handle_key(dialog, key) {
+        confirm::ConfirmAction::None => DevicesAction::None,
+        confirm::ConfirmAction::Cancel => {
+            view.confirm = None;
+            DevicesAction::None
+        }
+        confirm::ConfirmAction::Confirm => apply_clean(state),
+    }
+}
+
+fn apply_clean(state: &mut State) -> DevicesAction {
+    let View::Books(view) = &mut state.view else {
+        return DevicesAction::None;
+    };
+    // Pull everything we need out of the view before borrowing `state.catalog`.
+    let serial = view.serial.clone();
+    let mount = view.mount.clone();
+    let device_paths: Vec<PathBuf> = view.selected.iter().cloned().collect();
+    view.confirm = None;
+
+    let Some(dir) = state.catalog.as_ref().map(|c| c.dir.clone()) else {
+        return DevicesAction::None;
+    };
+    let conn = match catalog::open_existing(&dir) {
+        Ok(conn) => conn,
+        Err(err) => return DevicesAction::Status(StatusMessage::error(err.to_string())),
+    };
+    let outcome = match device::clean::clean(&conn, &serial, &mount, &device_paths) {
+        Ok(outcome) => outcome,
+        Err(err) => return DevicesAction::Status(StatusMessage::error(err.to_string())),
+    };
+    let rows = match device::books::list(&conn, &serial, &mount) {
+        Ok(rows) => rows,
+        Err(err) => return DevicesAction::Status(StatusMessage::error(err.to_string())),
+    };
+    drop(conn);
+
+    if let View::Books(view) = &mut state.view {
+        view.rows = rows;
+        view.selected.clear();
+        view.cursor = view.cursor.min(view.rows.len().saturating_sub(1));
+    }
+    DevicesAction::Status(StatusMessage::info(format!(
+        "removed {} books, freed {}",
+        outcome.removed.len(),
+        format_bytes(outcome.total_bytes)
+    )))
 }
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
@@ -404,8 +531,17 @@ fn render_books(frame: &mut Frame<'_>, area: Rect, view: &BooksView) {
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(area);
 
+    let title = if view.selected.is_empty() {
+        format!("Devices › {}", view.alias)
+    } else {
+        format!(
+            "Devices › {}  ({} selected)",
+            view.alias,
+            view.selected.len()
+        )
+    };
     let header = Paragraph::new(Line::from(Span::styled(
-        format!("Devices › {}", view.alias),
+        title,
         Style::default().add_modifier(Modifier::BOLD),
     )));
     frame.render_widget(header, layout[0]);
@@ -422,7 +558,12 @@ fn render_books(frame: &mut Frame<'_>, area: Rect, view: &BooksView) {
     let items: Vec<ListItem> = view
         .rows
         .iter()
-        .map(|book| ListItem::new(book_row_line(book)))
+        .map(|book| {
+            ListItem::new(book_row_line(
+                book,
+                view.selected.contains(&book.device_path),
+            ))
+        })
         .collect();
     let list = List::new(items).highlight_style(
         Style::default()
@@ -432,6 +573,10 @@ fn render_books(frame: &mut Frame<'_>, area: Rect, view: &BooksView) {
     let mut list_state = ListState::default();
     list_state.select(Some(view.cursor.min(view.rows.len() - 1)));
     frame.render_stateful_widget(list, layout[1], &mut list_state);
+
+    if let Some(dialog) = &view.confirm {
+        confirm::render(frame, area, dialog);
+    }
 }
 
 fn render_rename(frame: &mut Frame<'_>, area: Rect, rename: &RenameInput) {
@@ -499,7 +644,7 @@ fn device_row_line(row: &device::DeviceRow) -> Line<'static> {
     Line::from(spans)
 }
 
-fn book_row_line(book: &device::books::DeviceBook) -> Line<'static> {
+fn book_row_line(book: &device::books::DeviceBook, selected: bool) -> Line<'static> {
     let (tag, tag_style) = match book.presence {
         Presence::Both => ("both", Style::default().fg(Color::Green)),
         Presence::DeviceOnly => ("device only", Style::default().fg(Color::DarkGray)),
@@ -507,7 +652,17 @@ fn book_row_line(book: &device::books::DeviceBook) -> Line<'static> {
     };
     let title = book.title.clone().unwrap_or_else(|| "-".to_string());
     let author = book.author.clone().unwrap_or_else(|| "-".to_string());
+    let check = if selected { "[x]" } else { "[ ]" };
     Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            check.to_string(),
+            if selected {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ),
         Span::raw(" "),
         Span::styled(format!("[{tag}]"), tag_style),
         Span::raw("  "),
@@ -544,6 +699,7 @@ fn format_bytes(bytes: u64) -> String {
 mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
+    use rusqlite::params;
     use std::fs;
     use tempfile::tempdir;
 
@@ -690,8 +846,11 @@ mod tests {
         state.view = View::Books(BooksView {
             serial: "AAA".to_string(),
             alias: "zeta".to_string(),
+            mount: PathBuf::from("/nonexistent"),
             rows: Vec::new(),
             cursor: 0,
+            selected: BTreeSet::new(),
+            confirm: None,
         });
         let action = handle_key(&mut state, key(KeyCode::Esc));
         assert!(matches!(action, DevicesAction::None));
@@ -713,5 +872,172 @@ mod tests {
         assert!(!captures_text_input(&state));
         handle_key(&mut state, key(KeyCode::Char('r')));
         assert!(captures_text_input(&state));
+    }
+
+    // Build a Devices state sitting on a books view backed by a real temp mount
+    // with two synced epubs. `setup()` only makes disconnected devices and the
+    // USB scan is disabled, so we construct the `View::Books` directly (as the
+    // `esc_from_books_*` test does) after seeding the catalog + device files.
+    fn books_view(mount: &Path, reg: &Registry) -> State {
+        let entry = reg.resolve(None).unwrap();
+        let conn = catalog::open_existing(&entry.path).unwrap();
+        let docs = mount.join("documents");
+        fs::create_dir_all(&docs).unwrap();
+        devices::record_seen(&conn, "AAA").unwrap();
+        for (i, name) in ["Dune.epub", "Hyperion.epub"].iter().enumerate() {
+            fs::write(docs.join(name), b"book bytes").unwrap();
+            conn.execute(
+                "INSERT INTO books (title, author, format, file_path) VALUES (?1, 'A', 'epub', '')",
+                params![format!("title {i}")],
+            )
+            .unwrap();
+            let book_id = conn.last_insert_rowid();
+            devices::record_sync(
+                &conn,
+                "AAA",
+                book_id,
+                &PathBuf::from("documents").join(name),
+                "h",
+                9,
+                1,
+            )
+            .unwrap();
+        }
+        let rows = device::books::list(&conn, "AAA", mount).unwrap();
+        drop(conn);
+
+        let mut state = State::load(reg);
+        state.view = View::Books(BooksView {
+            serial: "AAA".to_string(),
+            alias: "zeta".to_string(),
+            mount: mount.to_path_buf(),
+            rows,
+            cursor: 0,
+            selected: BTreeSet::new(),
+            confirm: None,
+        });
+        state
+    }
+
+    fn books(state: &State) -> &BooksView {
+        match &state.view {
+            View::Books(v) => v,
+            _ => panic!("expected a books view"),
+        }
+    }
+
+    #[test]
+    fn space_toggles_selection() {
+        let (_tmp, reg) = setup();
+        let mount = tempdir().unwrap();
+        let mut state = books_view(mount.path(), &reg);
+        let path = books(&state).rows[0].device_path.clone();
+
+        handle_key(&mut state, key(KeyCode::Char(' ')));
+        assert!(books(&state).selected.contains(&path));
+        handle_key(&mut state, key(KeyCode::Char(' ')));
+        assert!(books(&state).selected.is_empty());
+    }
+
+    #[test]
+    fn enter_with_empty_selection_is_noop_status() {
+        let (_tmp, reg) = setup();
+        let mount = tempdir().unwrap();
+        let mut state = books_view(mount.path(), &reg);
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+        assert!(matches!(action, DevicesAction::Status(_)));
+        assert!(books(&state).confirm.is_none());
+        assert_eq!(books(&state).rows.len(), 2, "no books removed");
+    }
+
+    #[test]
+    fn enter_with_selection_opens_confirm() {
+        let (_tmp, reg) = setup();
+        let mount = tempdir().unwrap();
+        let mut state = books_view(mount.path(), &reg);
+
+        handle_key(&mut state, key(KeyCode::Char(' ')));
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+        assert!(matches!(action, DevicesAction::None));
+        let dialog = books(&state).confirm.as_ref().expect("confirm opens");
+        assert_eq!(dialog.focus, confirm::Button::Cancel);
+    }
+
+    #[test]
+    fn confirm_cancel_dismisses_without_deleting() {
+        let (_tmp, reg) = setup();
+        let mount = tempdir().unwrap();
+        let mut state = books_view(mount.path(), &reg);
+
+        handle_key(&mut state, key(KeyCode::Char(' ')));
+        handle_key(&mut state, key(KeyCode::Enter));
+        handle_key(&mut state, key(KeyCode::Esc));
+
+        assert!(books(&state).confirm.is_none());
+        assert!(mount.path().join("documents/Dune.epub").exists());
+        assert!(
+            !books(&state).selected.is_empty(),
+            "cancel keeps the marks so the user can retry"
+        );
+    }
+
+    #[test]
+    fn confirm_delete_removes_file_and_sync_row_and_refreshes() {
+        let (_tmp, reg) = setup();
+        let mount = tempdir().unwrap();
+        let mut state = books_view(mount.path(), &reg);
+        let target = books(&state).rows[0].device_path.clone();
+
+        handle_key(&mut state, key(KeyCode::Char(' ')));
+        handle_key(&mut state, key(KeyCode::Enter));
+        // Default focus is Cancel; Tab to Delete, then confirm.
+        handle_key(&mut state, key(KeyCode::Tab));
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+
+        assert!(matches!(action, DevicesAction::Status(_)));
+        let view = books(&state);
+        assert!(view.confirm.is_none());
+        assert!(view.selected.is_empty());
+        assert_eq!(view.rows.len(), 1, "the cleaned book is gone from the list");
+        assert!(view.cursor < view.rows.len());
+        assert!(!mount.path().join(&target).exists());
+
+        let entry = reg.resolve(None).unwrap();
+        let conn = catalog::open_existing(&entry.path).unwrap();
+        let synced = devices::synced_paths(&conn, "AAA").unwrap();
+        assert!(!synced.contains_key(&target), "sync row cleared");
+    }
+
+    #[test]
+    fn confirm_delete_reports_freed_bytes() {
+        let (_tmp, reg) = setup();
+        let mount = tempdir().unwrap();
+        let mut state = books_view(mount.path(), &reg);
+
+        handle_key(&mut state, key(KeyCode::Char(' ')));
+        handle_key(&mut state, key(KeyCode::Enter));
+        handle_key(&mut state, key(KeyCode::Tab));
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+
+        let DevicesAction::Status(status) = action else {
+            panic!("expected a status message");
+        };
+        // Each seeded file holds `b"book bytes"` (10 bytes).
+        assert!(status.text.contains("removed 1 books"));
+        assert!(status.text.contains("10 B"));
+    }
+
+    #[test]
+    fn colon_swallowed_while_confirm_open() {
+        let (_tmp, reg) = setup();
+        let mount = tempdir().unwrap();
+        let mut state = books_view(mount.path(), &reg);
+
+        handle_key(&mut state, key(KeyCode::Char(' ')));
+        handle_key(&mut state, key(KeyCode::Enter));
+        let action = handle_key(&mut state, key(KeyCode::Char(':')));
+        assert!(matches!(action, DevicesAction::None));
+        assert!(books(&state).confirm.is_some());
     }
 }
