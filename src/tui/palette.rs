@@ -11,6 +11,7 @@ pub const COMMANDS: &[&str] = &[
     ":library",
     ":catalogs",
     ":search",
+    ":devices",
     ":help",
     ":h",
     ":quit",
@@ -43,6 +44,7 @@ pub enum Command {
     Library,
     Catalogs,
     Search,
+    Devices,
     Help,
     Quit,
     /// Absolute page jump (1-indexed). Active only in the reader.
@@ -94,6 +96,7 @@ pub fn parse(input: &str) -> Option<Command> {
         ":library" => Some(Command::Library),
         ":catalogs" => Some(Command::Catalogs),
         ":search" => Some(Command::Search),
+        ":devices" => Some(Command::Devices),
         ":help" | ":h" => Some(Command::Help),
         ":quit" | ":q" => Some(Command::Quit),
         _ => parse_jump(input),
@@ -238,6 +241,22 @@ mod tests {
         type_text(&mut s, "s");
         handle_key(&mut s, key(KeyCode::Tab));
         assert_eq!(s.input.value(), ":search");
+    }
+
+    #[test]
+    fn tab_completes_d_to_devices() {
+        let mut s = State::new();
+        type_text(&mut s, "d");
+        handle_key(&mut s, key(KeyCode::Tab));
+        assert_eq!(s.input.value(), ":devices");
+    }
+
+    #[test]
+    fn enter_devices_returns_devices_command() {
+        let mut s = State::new();
+        type_text(&mut s, "devices");
+        let action = handle_key(&mut s, key(KeyCode::Enter));
+        assert!(matches!(action, PaletteAction::Execute(Command::Devices)));
     }
 
     #[test]

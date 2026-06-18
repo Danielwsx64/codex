@@ -10,6 +10,7 @@ use ratatui::{Frame, Terminal};
 use crate::config::Registry;
 use crate::tui::catalogs;
 use crate::tui::confirm;
+use crate::tui::devices;
 use crate::tui::help;
 use crate::tui::library;
 use crate::tui::loading;
@@ -23,6 +24,7 @@ use crate::tui::widgets::{outer_block, render_default_footer, render_status, Sta
 pub enum Screen {
     Welcome(welcome::State),
     Catalogs(catalogs::State),
+    Devices(devices::State),
     NewCatalog(new_catalog::State),
     Library(library::State),
     Loading(Box<loading::State>),
@@ -200,6 +202,7 @@ impl App {
             Screen::NewCatalog(s) => new_catalog::captures_text_input(s),
             Screen::Library(s) => library::captures_text_input(s),
             Screen::Reader(s) => reader::captures_text_input(s),
+            Screen::Devices(s) => devices::captures_text_input(s),
             _ => false,
         }
     }
@@ -250,6 +253,9 @@ impl App {
             palette::Command::Search => {
                 self.open_search();
             }
+            palette::Command::Devices => {
+                self.screen = Screen::Devices(devices::State::load(&self.registry));
+            }
             palette::Command::Help => {
                 self.help = Some(help::State);
             }
@@ -297,6 +303,10 @@ impl App {
                 let action = catalogs::handle_key(state, key, &mut self.registry, &self.config_dir);
                 self.apply_catalogs_action(action);
             }
+            Screen::Devices(state) => {
+                let action = devices::handle_key(state, key);
+                self.apply_devices_action(action);
+            }
             Screen::NewCatalog(state) => {
                 let action =
                     new_catalog::handle_key(state, key, &mut self.registry, &self.config_dir);
@@ -332,7 +342,9 @@ impl App {
             welcome::WelcomeAction::Enter(welcome::Section::Search) => {
                 self.open_search();
             }
-            welcome::WelcomeAction::Enter(_) => {}
+            welcome::WelcomeAction::Enter(welcome::Section::Devices) => {
+                self.screen = Screen::Devices(devices::State::load(&self.registry));
+            }
         }
     }
 
@@ -350,6 +362,21 @@ impl App {
                 self.palette = Some(palette::State::new());
             }
             catalogs::CatalogsAction::Status(s) => {
+                self.status = Some(s);
+            }
+        }
+    }
+
+    fn apply_devices_action(&mut self, action: devices::DevicesAction) {
+        match action {
+            devices::DevicesAction::None => {}
+            devices::DevicesAction::Back => {
+                self.screen = Screen::Welcome(welcome::State::new());
+            }
+            devices::DevicesAction::OpenPalette => {
+                self.palette = Some(palette::State::new());
+            }
+            devices::DevicesAction::Status(s) => {
                 self.status = Some(s);
             }
         }
@@ -451,6 +478,7 @@ impl App {
         match &mut self.screen {
             Screen::Welcome(state) => welcome::render(frame, chunks[0], state),
             Screen::Catalogs(state) => catalogs::render(frame, chunks[0], state),
+            Screen::Devices(state) => devices::render(frame, chunks[0], state),
             Screen::NewCatalog(state) => new_catalog::render(frame, chunks[0], state),
             Screen::Library(state) => library::render(frame, chunks[0], state),
             Screen::Loading(state) => loading::render(frame, chunks[0], state),
@@ -481,6 +509,7 @@ impl App {
         match &self.screen {
             Screen::Welcome(state) => welcome::help_sections(state),
             Screen::Catalogs(state) => catalogs::help_sections(state),
+            Screen::Devices(state) => devices::help_sections(state),
             Screen::NewCatalog(state) => new_catalog::help_sections(state),
             Screen::Library(state) => library::help_sections(state),
             Screen::Loading(state) => loading::help_sections(state),
@@ -681,6 +710,31 @@ mod tests {
         app.dispatch(Event::Key(key(KeyCode::Enter))).unwrap();
         assert!(app.palette.is_none());
         assert!(matches!(app.screen, Screen::Catalogs(_)));
+    }
+
+    #[test]
+    fn palette_devices_command_navigates() {
+        std::env::set_var(crate::device::DISABLE_SCAN_ENV, "1");
+        let mut app = fresh_app();
+        app.dispatch(Event::Key(key(KeyCode::Char(':')))).unwrap();
+        for ch in "devices".chars() {
+            app.dispatch(Event::Key(key(KeyCode::Char(ch)))).unwrap();
+        }
+        app.dispatch(Event::Key(key(KeyCode::Enter))).unwrap();
+        assert!(app.palette.is_none());
+        assert!(matches!(app.screen, Screen::Devices(_)));
+    }
+
+    #[test]
+    fn welcome_devices_link_opens_devices() {
+        std::env::set_var(crate::device::DISABLE_SCAN_ENV, "1");
+        let mut app = fresh_app();
+        // Welcome menu: Library -> Catalogs -> Search -> Devices.
+        app.dispatch(Event::Key(key(KeyCode::Down))).unwrap();
+        app.dispatch(Event::Key(key(KeyCode::Down))).unwrap();
+        app.dispatch(Event::Key(key(KeyCode::Down))).unwrap();
+        app.dispatch(Event::Key(key(KeyCode::Enter))).unwrap();
+        assert!(matches!(app.screen, Screen::Devices(_)));
     }
 
     fn fresh_app() -> App {

@@ -228,7 +228,7 @@ A identidade de um livro entre catálogo e device tem duas camadas:
 - [ ] TUI: ação de limpeza na visão do device — Space marca livros,
       confirma e apaga (espelha `cdx device clean`); a navegação já
       resolve a escolha de device sem flag
-- [ ] TUI: tela "Devices" — lista devices (alias, conectado ou não);
+- [x] TUI: tela "Devices" — lista devices (alias, conectado ou não);
       `r` renomeia o apelido; Enter abre a visão de livros do device
       selecionado (a navegação resolve a escolha de device sem flag)
 - [ ] TUI: indicadores de presença na visão do device e na Library
@@ -240,7 +240,7 @@ A identidade de um livro entre catálogo e device tem duas camadas:
       lista com checkbox por item (Space marca/desmarca, `a` tudo),
       conflitos destacados exigem escolha explícita, Enter aplica só
       o que está marcado, progresso linha a linha
-- [ ] TUI: registrar `:devices` no command palette + ativar link
+- [x] TUI: registrar `:devices` no command palette + ativar link
       "Devices" na welcome
 
 ## v0.5 — Curadoria: duplicatas

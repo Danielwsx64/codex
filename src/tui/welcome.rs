@@ -53,8 +53,7 @@ impl Section {
 
     pub fn milestone(self) -> Option<&'static str> {
         match self {
-            Section::Library | Section::Catalogs | Section::Search => None,
-            Section::Devices => Some("v0.4"),
+            Section::Library | Section::Catalogs | Section::Search | Section::Devices => None,
         }
     }
 
@@ -215,23 +214,25 @@ mod tests {
     }
 
     #[test]
-    fn down_skips_disabled_sections() {
+    fn down_cycles_through_all_sections() {
         let mut s = State::new();
         handle_key(&mut s, key(KeyCode::Down));
         assert_eq!(s.selected(), Section::Catalogs);
         handle_key(&mut s, key(KeyCode::Down));
         assert_eq!(s.selected(), Section::Search);
         handle_key(&mut s, key(KeyCode::Down));
-        // Devices is disabled (v0.4), so wrapping forward lands back on Library.
+        assert_eq!(s.selected(), Section::Devices);
+        handle_key(&mut s, key(KeyCode::Down));
+        // All four are enabled now, so wrapping forward lands back on Library.
         assert_eq!(s.selected(), Section::Library);
     }
 
     #[test]
-    fn up_wraps_to_last_enabled() {
+    fn up_wraps_to_last_section() {
         let mut s = State::new();
         handle_key(&mut s, key(KeyCode::Up));
-        // Devices is disabled, so the last enabled wrapping backward is Search.
-        assert_eq!(s.selected(), Section::Search);
+        // All sections enabled, so wrapping backward lands on Devices (last).
+        assert_eq!(s.selected(), Section::Devices);
     }
 
     #[test]
@@ -242,9 +243,19 @@ mod tests {
     }
 
     #[test]
-    fn search_section_is_enabled() {
+    fn all_sections_are_enabled() {
         assert!(Section::Search.enabled());
-        assert!(!Section::Devices.enabled());
+        assert!(Section::Devices.enabled());
+    }
+
+    #[test]
+    fn enter_on_devices_returns_navigate() {
+        let mut s = State::new();
+        handle_key(&mut s, key(KeyCode::Down)); // Catalogs
+        handle_key(&mut s, key(KeyCode::Down)); // Search
+        handle_key(&mut s, key(KeyCode::Down)); // Devices
+        let action = handle_key(&mut s, key(KeyCode::Enter));
+        assert!(matches!(action, WelcomeAction::Enter(Section::Devices)));
     }
 
     #[test]

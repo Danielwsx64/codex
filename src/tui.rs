@@ -16,6 +16,7 @@ use ratatui::Terminal;
 pub mod app;
 pub mod catalogs;
 pub mod confirm;
+pub mod devices;
 pub mod help;
 pub mod library;
 pub mod loading;
