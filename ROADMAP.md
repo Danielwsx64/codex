@@ -182,7 +182,7 @@ A identidade de um livro entre catálogo e device tem duas camadas:
       `device_serial`, `book_id`, `device_path`, `hash`, `size`,
       `mtime`, `synced_at`); devices vivem no catalog.db, então o
       apelido é por catálogo
-- [ ] `cdx device ls` — lista os devices detectados e os conhecidos
+- [x] `cdx device ls` — lista os devices detectados e os conhecidos
       (alias, serial, mount path quando conectado, espaço livre,
       contagem de livros); humano + JSONL
 - [ ] `cdx device alias <serial|alias> <new-alias>` — define/renomeia

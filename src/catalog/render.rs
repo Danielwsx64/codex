@@ -10,6 +10,7 @@ use crate::catalog::books::{
 };
 use crate::catalog::columns::LibraryColumn;
 use crate::catalog::handlers::{AddOutcome, CatalogRow, InitOutcome, RmOutcome, UseOutcome};
+use crate::device::DeviceRow;
 
 // Single funnel used by every dispatcher that picks between a human and a
 // JSONL renderer. Locks stdout, runs the matching closure, flushes.
@@ -678,6 +679,91 @@ pub fn render_book_rm_jsonl<W: Write>(outcome: &BookRmOutcome, w: &mut W) -> io:
     writeln!(w)
 }
 
+#[derive(Serialize)]
+struct DeviceLsJson<'a> {
+    alias: Option<&'a str>,
+    serial: &'a str,
+    connected: bool,
+    mount_path: Option<&'a Path>,
+    free_bytes: Option<u64>,
+    book_count: Option<usize>,
+    last_seen_at: &'a str,
+}
+
+pub fn render_device_ls_human<W: Write>(rows: &[DeviceRow], w: &mut W) -> io::Result<()> {
+    if rows.is_empty() {
+        writeln!(
+            w,
+            "No devices known. Connect a Kindle over USB and run `cdx device ls`."
+        )?;
+        return Ok(());
+    }
+    let mut tw = TabWriter::new(w).padding(2);
+    writeln!(
+        &mut tw,
+        "ALIAS\tSERIAL\tCONNECTED\tMOUNT\tFREE\tBOOKS\tLAST SEEN"
+    )?;
+    for row in rows {
+        let alias = row.alias.as_deref().unwrap_or(&row.serial);
+        let connected = if row.connected { "yes" } else { "no" };
+        let mount = row
+            .mount_path
+            .as_deref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let free = row
+            .free_bytes
+            .map(format_bytes)
+            .unwrap_or_else(|| "-".to_string());
+        let books = row
+            .book_count
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        writeln!(
+            &mut tw,
+            "{alias}\t{serial}\t{connected}\t{mount}\t{free}\t{books}\t{last_seen}",
+            serial = row.serial,
+            last_seen = row.last_seen_at,
+        )?;
+    }
+    tw.flush()?;
+    Ok(())
+}
+
+pub fn render_device_ls_jsonl<W: Write>(rows: &[DeviceRow], w: &mut W) -> io::Result<()> {
+    for row in rows {
+        let value = DeviceLsJson {
+            alias: row.alias.as_deref(),
+            serial: &row.serial,
+            connected: row.connected,
+            mount_path: row.mount_path.as_deref(),
+            free_bytes: row.free_bytes,
+            book_count: row.book_count,
+            last_seen_at: &row.last_seen_at,
+        };
+        serde_json::to_writer(&mut *w, &value)?;
+        writeln!(w)?;
+    }
+    Ok(())
+}
+
+// Binary units (KiB/MiB/GiB) so the column stays narrow on devices with tens
+// of gigabytes free. Bytes under 1 KiB print as a raw count.
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[0])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -741,5 +827,66 @@ mod tests {
         render_ls_human(&[], &mut buf).unwrap();
         let text = String::from_utf8(buf).unwrap();
         assert!(text.contains("catalog init"));
+    }
+
+    fn device_row(serial: &str, alias: Option<&str>, connected: bool) -> DeviceRow {
+        DeviceRow {
+            alias: alias.map(str::to_string),
+            serial: serial.to_string(),
+            connected,
+            mount_path: connected.then(|| PathBuf::from("/media/user/Kindle")),
+            free_bytes: connected.then_some(2_147_483_648),
+            book_count: connected.then_some(42),
+            last_seen_at: "2026-06-08 12:00:00".to_string(),
+        }
+    }
+
+    #[test]
+    fn device_ls_human_empty_prints_hint() {
+        let mut buf = Vec::new();
+        render_device_ls_human(&[], &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("No devices"));
+    }
+
+    #[test]
+    fn device_ls_human_falls_back_to_serial_and_dashes() {
+        let rows = vec![device_row("SERIAL_X", None, false)];
+        let mut buf = Vec::new();
+        render_device_ls_human(&rows, &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("SERIAL_X"));
+        assert!(text.contains("no"));
+        // disconnected columns collapse to "-"
+        assert!(text.contains('-'));
+    }
+
+    #[test]
+    fn device_ls_jsonl_empty_emits_nothing() {
+        let mut buf = Vec::new();
+        render_device_ls_jsonl(&[], &mut buf).unwrap();
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn device_ls_jsonl_shape_for_connected_device() {
+        let rows = vec![device_row("SERIAL_C", Some("paperwhite"), true)];
+        let mut buf = Vec::new();
+        render_device_ls_jsonl(&rows, &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(v["serial"], "SERIAL_C");
+        assert_eq!(v["alias"], "paperwhite");
+        assert_eq!(v["connected"], true);
+        assert_eq!(v["book_count"], 42);
+        assert_eq!(v["free_bytes"], 2_147_483_648u64);
+    }
+
+    #[test]
+    fn format_bytes_uses_binary_units() {
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(2_147_483_648), "2.0 GiB");
     }
 }

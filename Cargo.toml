@@ -20,6 +20,10 @@ anyhow = "1"
 clap = { version = "=4.5.20", features = ["derive"] }
 crossterm = "=0.28.1"
 directories = "5.0"
+# Free-space query for `cdx device ls`; stdlib has no statvfs and the crate's
+# `#![deny(unsafe_code)]` forbids hand-rolling the syscall (fs4 keeps unsafe
+# internal). Pinned to 0.8 to stay on MSRV 1.80.
+fs4 = "0.8"
 # HTML → terminal text/styles for EPUB chapter rendering. html5ever-based.
 # Pinned to 0.15 (MSRV 1.72); 0.16+ requires Rust 1.85 (edition2024).
 html2text = { version = "0.15", default-features = false }

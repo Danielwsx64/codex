@@ -4,6 +4,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 
 pub mod books;
 pub mod catalog;
+pub mod device;
 pub mod edit;
 pub mod embed;
 
@@ -224,6 +225,14 @@ pub enum Command {
     },
     #[command(subcommand, about = "Manage metadata embedded into book files")]
     Embed(EmbedCmd),
+    #[command(subcommand, about = "Manage ereaders (devices)")]
+    Device(DeviceCmd),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DeviceCmd {
+    #[command(about = "List detected and known devices")]
+    Ls,
 }
 
 #[derive(Subcommand, Debug)]
