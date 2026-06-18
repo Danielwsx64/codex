@@ -233,6 +233,13 @@ pub enum Command {
 pub enum DeviceCmd {
     #[command(about = "List detected and known devices")]
     Ls,
+    #[command(about = "Set or rename a device alias")]
+    Alias {
+        #[arg(value_name = "SERIAL_OR_ALIAS")]
+        target: String,
+        #[arg(value_name = "NEW_ALIAS")]
+        new_alias: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]

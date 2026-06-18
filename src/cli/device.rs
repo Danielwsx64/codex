@@ -15,7 +15,33 @@ pub fn dispatch(
 ) -> Result<()> {
     match cmd {
         DeviceCmd::Ls => dispatch_ls(data_dir, catalog_override, json),
+        DeviceCmd::Alias { target, new_alias } => {
+            dispatch_alias(&target, &new_alias, data_dir, catalog_override, json)
+        }
     }
+}
+
+fn dispatch_alias(
+    target: &str,
+    new_alias: &str,
+    data_dir: Option<&Path>,
+    catalog_override: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let registry = load(data_dir)?;
+    let entry = resolve_entry(&registry, catalog_override)?.clone();
+    let conn = catalog::open_existing(&entry.path)
+        .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
+
+    let outcome = devices::handle_alias(&conn, target, new_alias)
+        .with_context(|| format!("while setting alias for `{target}`"))?;
+
+    render::emit(
+        json,
+        |w| render::render_alias_human(&outcome, w),
+        |w| render::render_alias_jsonl(&outcome, w),
+    )?;
+    Ok(())
 }
 
 fn dispatch_ls(data_dir: Option<&Path>, catalog_override: Option<&str>, json: bool) -> Result<()> {

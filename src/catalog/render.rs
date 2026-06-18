@@ -9,6 +9,7 @@ use crate::catalog::books::{
     SeriesOutcome, TagOpOutcome,
 };
 use crate::catalog::columns::LibraryColumn;
+use crate::catalog::devices::AliasOutcome;
 use crate::catalog::handlers::{AddOutcome, CatalogRow, InitOutcome, RmOutcome, UseOutcome};
 use crate::device::DeviceRow;
 
@@ -747,6 +748,44 @@ pub fn render_device_ls_jsonl<W: Write>(rows: &[DeviceRow], w: &mut W) -> io::Re
     Ok(())
 }
 
+#[derive(Serialize)]
+struct AliasJson<'a> {
+    action: &'a str,
+    serial: &'a str,
+    alias: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous: Option<&'a str>,
+}
+
+pub fn render_alias_human<W: Write>(outcome: &AliasOutcome, w: &mut W) -> io::Result<()> {
+    match outcome.previous.as_deref() {
+        Some(prev) if prev != outcome.alias => writeln!(
+            w,
+            "Renamed device {} from `{}` to `{}`",
+            outcome.serial, prev, outcome.alias
+        ),
+        _ => writeln!(
+            w,
+            "Aliased device {} as `{}`",
+            outcome.serial, outcome.alias
+        ),
+    }
+}
+
+pub fn render_alias_jsonl<W: Write>(outcome: &AliasOutcome, w: &mut W) -> io::Result<()> {
+    let value = AliasJson {
+        action: "alias",
+        serial: &outcome.serial,
+        alias: &outcome.alias,
+        previous: outcome
+            .previous
+            .as_deref()
+            .filter(|prev| *prev != outcome.alias),
+    };
+    serde_json::to_writer(&mut *w, &value)?;
+    writeln!(w)
+}
+
 // Binary units (KiB/MiB/GiB) so the column stays narrow on devices with tens
 // of gigabytes free. Bytes under 1 KiB print as a raw count.
 fn format_bytes(bytes: u64) -> String {
@@ -882,6 +921,68 @@ mod tests {
         assert_eq!(v["connected"], true);
         assert_eq!(v["book_count"], 42);
         assert_eq!(v["free_bytes"], 2_147_483_648u64);
+    }
+
+    #[test]
+    fn alias_human_first_time_says_aliased() {
+        let outcome = AliasOutcome {
+            serial: "SERIAL_X".to_string(),
+            alias: "paperwhite".to_string(),
+            previous: None,
+        };
+        let mut buf = Vec::new();
+        render_alias_human(&outcome, &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("Aliased device SERIAL_X"));
+        assert!(text.contains("paperwhite"));
+    }
+
+    #[test]
+    fn alias_human_rename_mentions_previous() {
+        let outcome = AliasOutcome {
+            serial: "SERIAL_X".to_string(),
+            alias: "study".to_string(),
+            previous: Some("paperwhite".to_string()),
+        };
+        let mut buf = Vec::new();
+        render_alias_human(&outcome, &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("Renamed device SERIAL_X"));
+        assert!(text.contains("paperwhite"));
+        assert!(text.contains("study"));
+    }
+
+    #[test]
+    fn alias_jsonl_shape() {
+        let outcome = AliasOutcome {
+            serial: "SERIAL_X".to_string(),
+            alias: "study".to_string(),
+            previous: Some("paperwhite".to_string()),
+        };
+        let mut buf = Vec::new();
+        render_alias_jsonl(&outcome, &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(v["action"], "alias");
+        assert_eq!(v["serial"], "SERIAL_X");
+        assert_eq!(v["alias"], "study");
+        assert_eq!(v["previous"], "paperwhite");
+    }
+
+    #[test]
+    fn alias_jsonl_omits_unchanged_previous() {
+        let outcome = AliasOutcome {
+            serial: "SERIAL_X".to_string(),
+            alias: "study".to_string(),
+            previous: Some("study".to_string()),
+        };
+        let mut buf = Vec::new();
+        render_alias_jsonl(&outcome, &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        let v: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert!(v.get("previous").is_none());
     }
 
     #[test]

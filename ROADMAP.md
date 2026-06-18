@@ -185,7 +185,7 @@ A identidade de um livro entre catálogo e device tem duas camadas:
 - [x] `cdx device ls` — lista os devices detectados e os conhecidos
       (alias, serial, mount path quando conectado, espaço livre,
       contagem de livros); humano + JSONL
-- [ ] `cdx device alias <serial|alias> <new-alias>` — define/renomeia
+- [x] `cdx device alias <serial|alias> <new-alias>` — define/renomeia
       o apelido; na primeira detecção de um device sem apelido o
       serial é usado como fallback nas listagens
 - [ ] `cdx device books [--device <alias>]` — lista livros do device
