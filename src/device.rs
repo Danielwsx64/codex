@@ -7,6 +7,7 @@ use crate::catalog::devices::{self, KnownDevice};
 use crate::import::Format;
 
 pub mod books;
+pub mod clean;
 pub mod markers;
 pub mod mounts;
 pub mod pull;

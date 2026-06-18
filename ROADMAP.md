@@ -216,7 +216,7 @@ A identidade de um livro entre catálogo e device tem duas camadas:
       `--dry-run` só imprime o plano; `--yes` aceita tudo (pra
       script). Sync **nunca apaga** em nenhuma ponta — só copia;
       remoção é sempre manual
-- [ ] `cdx device clean [--device <alias>]` — remove livros do device.
+- [x] `cdx device clean [--device <alias>]` — remove livros do device.
       Sem alvo abre um seletor interativo (setas/`j``k`, multi-seleção,
       Enter confirma) listando os livros do device; `--all` limpa tudo.
       Apaga o arquivo no device e remove a entrada correspondente de

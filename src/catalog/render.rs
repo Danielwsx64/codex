@@ -12,6 +12,7 @@ use crate::catalog::columns::LibraryColumn;
 use crate::catalog::devices::AliasOutcome;
 use crate::catalog::handlers::{AddOutcome, CatalogRow, InitOutcome, RmOutcome, UseOutcome};
 use crate::device::books::DeviceBook;
+use crate::device::clean::CleanOutcome;
 use crate::device::pull::PullOutcome;
 use crate::device::push::PushOutcome;
 use crate::device::sync::{SyncItem, SyncPlan};
@@ -1040,6 +1041,51 @@ pub fn render_pull_jsonl<W: Write>(
     };
     serde_json::to_writer(&mut *w, &value)?;
     writeln!(w)
+}
+
+#[derive(Serialize)]
+struct CleanJson<'a> {
+    device_serial: &'a str,
+    device_path: &'a Path,
+    bytes: u64,
+}
+
+pub fn render_clean_human<W: Write>(
+    outcome: &CleanOutcome,
+    device_label: &str,
+    w: &mut W,
+) -> io::Result<()> {
+    for file in &outcome.removed {
+        writeln!(
+            w,
+            "Removed {} ({})",
+            file.device_path.display(),
+            format_bytes(file.bytes),
+        )?;
+    }
+    writeln!(
+        w,
+        "Removed {} file(s), freed {} from \"{device_label}\".",
+        outcome.removed.len(),
+        format_bytes(outcome.total_bytes),
+    )
+}
+
+pub fn render_clean_jsonl<W: Write>(
+    outcome: &CleanOutcome,
+    serial: &str,
+    w: &mut W,
+) -> io::Result<()> {
+    for file in &outcome.removed {
+        let value = CleanJson {
+            device_serial: serial,
+            device_path: &file.device_path,
+            bytes: file.bytes,
+        };
+        serde_json::to_writer(&mut *w, &value)?;
+        writeln!(w)?;
+    }
+    Ok(())
 }
 
 // Binary units (KiB/MiB/GiB) so the column stays narrow on devices with tens

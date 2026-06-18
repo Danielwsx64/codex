@@ -297,6 +297,19 @@ pub enum DeviceCmd {
         )]
         device: Option<String>,
     },
+    #[command(about = "Remove books from a connected device (never touches the catalog)")]
+    Clean {
+        #[arg(
+            long,
+            value_name = "SERIAL_OR_ALIAS",
+            help = "Target device (defaults to the only connected device)"
+        )]
+        device: Option<String>,
+        #[arg(long, help = "Remove every book on the device without selecting")]
+        all: bool,
+        #[arg(long, help = "Skip the confirmation prompt (for scripts)")]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

@@ -133,6 +133,20 @@ pub fn record_sync(
     Ok(())
 }
 
+// Drop the exact sync state for a single file on a device, keyed by its
+// on-device path. `cdx device clean` calls this after deleting the file: a synced
+// file clears its row (returns 1), a file that arrived on the device by other
+// means has no row (returns 0). Both are fine — the caller only removed a file.
+pub fn delete_synced_path(
+    conn: &Connection,
+    serial: &str,
+    device_path: &Path,
+) -> rusqlite::Result<usize> {
+    let mut stmt = conn
+        .prepare_cached("DELETE FROM device_books WHERE device_serial = ?1 AND device_path = ?2")?;
+    stmt.execute(params![serial, device_path.to_string_lossy()])
+}
+
 pub fn set_alias(conn: &Connection, serial: &str, alias: &str) -> rusqlite::Result<bool> {
     let n = conn.execute(
         "UPDATE devices SET alias = ?2 WHERE serial = ?1",
@@ -497,5 +511,34 @@ mod tests {
         assert_eq!(map.get(&PathBuf::from("documents/B.epub")), Some(&book_id));
         // A different serial sees none of AAA's rows.
         assert!(synced_paths(&conn, "BBB").unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_synced_path_removes_the_matching_row() {
+        let (_dir, conn) = open_fresh();
+        record_seen(&conn, "AAA").unwrap();
+        let book_id = insert_book(&conn);
+        record_sync(
+            &conn,
+            "AAA",
+            book_id,
+            Path::new("documents/B.epub"),
+            "h",
+            1,
+            1,
+        )
+        .unwrap();
+
+        let removed = delete_synced_path(&conn, "AAA", Path::new("documents/B.epub")).unwrap();
+        assert_eq!(removed, 1);
+        assert!(synced_paths(&conn, "AAA").unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_synced_path_for_unknown_path_is_zero() {
+        let (_dir, conn) = open_fresh();
+        record_seen(&conn, "AAA").unwrap();
+        let removed = delete_synced_path(&conn, "AAA", Path::new("documents/ghost.epub")).unwrap();
+        assert_eq!(removed, 0);
     }
 }

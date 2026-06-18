@@ -1,5 +1,5 @@
 use std::io::{IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -24,7 +24,102 @@ pub fn dispatch(
         DeviceCmd::Books { device } => {
             dispatch_books(device.as_deref(), data_dir, catalog_override, json)
         }
+        DeviceCmd::Clean { device, all, yes } => dispatch_clean(
+            device.as_deref(),
+            all,
+            yes,
+            data_dir,
+            catalog_override,
+            json,
+        ),
     }
+}
+
+fn dispatch_clean(
+    device: Option<&str>,
+    all: bool,
+    yes: bool,
+    data_dir: Option<&Path>,
+    catalog_override: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let registry = load(data_dir)?;
+    let entry = resolve_entry(&registry, catalog_override)?.clone();
+    let conn = catalog::open_existing(&entry.path)
+        .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
+
+    let detected = device::detect();
+    // Mirror the other device commands: keep aliases/last_seen fresh.
+    for found in &detected {
+        devices::record_seen(&conn, &found.serial)
+            .with_context(|| format!("while recording device `{}`", found.serial))?;
+    }
+
+    let target = device::resolve_target(&conn, &detected, device)?;
+    let label = device_label(&conn, &target.serial);
+
+    let books = device::books::list(&conn, &target.serial, &target.mount_path)
+        .with_context(|| format!("while listing books on device `{label}`"))?;
+    if books.is_empty() {
+        if !json {
+            println!("No books on device \"{label}\".");
+        }
+        return Ok(());
+    }
+
+    let paths: Vec<PathBuf> = if all {
+        books.iter().map(|b| b.device_path.clone()).collect()
+    } else {
+        // Interactive multi-select needs a terminal and is meaningless with
+        // machine output, so `--json` or a non-tty is a hard error.
+        if json || !std::io::stdout().is_terminal() {
+            anyhow::bail!(
+                "no books selected; pass --all or run in a terminal to pick interactively"
+            );
+        }
+        let labels: Vec<String> = books.iter().map(device_book_label).collect();
+        match crate::tui::pick::pick_multi("Clean device — mark books to remove", &labels)? {
+            // Cancelled or nothing marked: not an error, just nothing to do.
+            Some(indices) if !indices.is_empty() => indices
+                .into_iter()
+                .map(|i| books[i].device_path.clone())
+                .collect(),
+            _ => return Ok(()),
+        }
+    };
+
+    // Always confirm before deleting; `--yes` skips it. Without a terminal the
+    // prompt can't be answered, so refuse unless the caller opted in with --yes.
+    if !yes {
+        if json || !std::io::stdout().is_terminal() {
+            anyhow::bail!("refusing to delete non-interactively; pass --yes to confirm");
+        }
+        if !confirm_delete(paths.len(), &label)? {
+            return Ok(());
+        }
+    }
+
+    let outcome = device::clean::clean(&conn, &target.serial, &target.mount_path, &paths)
+        .with_context(|| format!("while cleaning device `{label}`"))?;
+
+    render::emit(
+        json,
+        |w| render::render_clean_human(&outcome, &label, w),
+        |w| render::render_clean_jsonl(&outcome, &target.serial, w),
+    )?;
+    Ok(())
+}
+
+// One-shot confirmation before deleting from a device. Default is No: a bare
+// Enter or EOF (closed pipe) cancels rather than deletes.
+fn confirm_delete(count: usize, label: &str) -> Result<bool> {
+    print!("Delete {count} file(s) from \"{label}\"? [y/N] ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line)? == 0 {
+        return Ok(false);
+    }
+    Ok(matches!(line.trim(), "y" | "Y"))
 }
 
 fn dispatch_books(
