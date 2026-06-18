@@ -224,7 +224,7 @@ pub struct SeriesOutcome {
     pub changed: bool,
 }
 
-enum ImportResult {
+pub enum ImportResult {
     New { id: i64, stored: PathBuf },
     Duplicate { existing_id: i64 },
 }
@@ -246,6 +246,23 @@ pub fn handle_add(
         rows.push(row);
     }
     AddOutcome { rows }
+}
+
+// Import a single file and return the typed outcome, so callers that need the
+// resulting book id in both the new and duplicate cases (e.g. `cdx pull`, which
+// records device sync state either way) get it without going through the
+// flattened `AddRow`. Runs the same fingerprint backfill as `handle_add` so
+// dedup sees the catalog as it stands.
+pub fn import_single(
+    conn: &mut Connection,
+    catalog_dir: &Path,
+    src: &Path,
+    force: bool,
+) -> Result<ImportResult> {
+    if let Err(err) = ensure_fingerprints(conn, catalog_dir) {
+        tracing::warn!(error = %err, "fingerprint backfill failed; continuing");
+    }
+    import_inner(conn, catalog_dir, src, force)
 }
 
 fn import_one(conn: &mut Connection, catalog_dir: &Path, src: &Path, force: bool) -> AddRow {

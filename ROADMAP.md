@@ -197,10 +197,13 @@ A identidade de um livro entre catálogo e device tem duas camadas:
       implícito; dois ou mais sem o flag → erro claro listando os
       candidatos (nunca escolher sozinho)
 - [x] `cdx push <id|título> [--device <alias>]` — copia arquivo do
-      catálogo pro device e grava o sync state (hash/size/mtime)
-- [ ] `cdx pull <path> [--device <alias>]` — importa livro do device
+      catálogo pro device e grava o sync state (hash/size/mtime); sem
+      `<id|título>` abre um seletor interativo (setas/`j``k` + Enter)
+      listando os livros do catálogo
+- [x] `cdx pull <path> [--device <alias>]` — importa livro do device
       reusando o pipeline do `cdx add` (incluindo dedup por hash) e
-      grava o sync state
+      grava o sync state; sem `<path>` abre um seletor interativo
+      (setas/`j``k` + Enter) listando os livros do device
 - [ ] Verificação de sync: o diff confere cada entrada do sync state
       pelo fast-path tamanho + mtime; divergência marca o livro como
       `modified` (re-push é oferecido no plano). `--verify` força

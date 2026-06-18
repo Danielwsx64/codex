@@ -12,6 +12,7 @@ use crate::catalog::columns::LibraryColumn;
 use crate::catalog::devices::AliasOutcome;
 use crate::catalog::handlers::{AddOutcome, CatalogRow, InitOutcome, RmOutcome, UseOutcome};
 use crate::device::books::DeviceBook;
+use crate::device::pull::PullOutcome;
 use crate::device::push::PushOutcome;
 use crate::device::DeviceRow;
 
@@ -870,6 +871,58 @@ pub fn render_push_jsonl<W: Write>(
         title: &outcome.title,
         serial,
         device_path: &outcome.device_path,
+        bytes: outcome.bytes,
+    };
+    serde_json::to_writer(&mut *w, &value)?;
+    writeln!(w)
+}
+
+#[derive(Serialize)]
+struct PullJson<'a> {
+    book_id: i64,
+    title: &'a str,
+    serial: &'a str,
+    device_path: &'a Path,
+    status: &'a str,
+    bytes: u64,
+}
+
+pub fn render_pull_human<W: Write>(
+    outcome: &PullOutcome,
+    device_label: &str,
+    w: &mut W,
+) -> io::Result<()> {
+    let verb = if outcome.imported {
+        "Imported"
+    } else {
+        "Matched (duplicate)"
+    };
+    writeln!(
+        w,
+        "{verb} \"{}\" ← {}:{} as id {} ({})",
+        outcome.title,
+        device_label,
+        outcome.device_path.display(),
+        outcome.book_id,
+        format_bytes(outcome.bytes),
+    )
+}
+
+pub fn render_pull_jsonl<W: Write>(
+    outcome: &PullOutcome,
+    serial: &str,
+    w: &mut W,
+) -> io::Result<()> {
+    let value = PullJson {
+        book_id: outcome.book_id,
+        title: &outcome.title,
+        serial,
+        device_path: &outcome.device_path,
+        status: if outcome.imported {
+            "imported"
+        } else {
+            "duplicate"
+        },
         bytes: outcome.bytes,
     };
     serde_json::to_writer(&mut *w, &value)?;

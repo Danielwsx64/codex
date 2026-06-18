@@ -9,6 +9,7 @@ use crate::import::Format;
 pub mod books;
 pub mod markers;
 pub mod mounts;
+pub mod pull;
 pub mod push;
 pub mod sysfs;
 
@@ -278,6 +279,17 @@ fn is_ebook(path: &Path) -> bool {
         .and_then(|ext| ext.to_str())
         .and_then(Format::parse_label)
         .is_some()
+}
+
+// Modification time as whole seconds since the Unix epoch (FAT granularity is
+// 2s anyway). A clock before the epoch can't happen on a real file, so it maps
+// to 0 rather than erroring. Shared by `push` and `pull` for sync state.
+pub(crate) fn mtime_secs(path: &Path) -> std::result::Result<i64, std::io::Error> {
+    let modified = std::fs::metadata(path).and_then(|m| m.modified())?;
+    Ok(modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0))
 }
 
 #[cfg(all(test, unix))]

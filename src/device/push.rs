@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use rusqlite::Connection;
 use thiserror::Error;
@@ -78,7 +77,10 @@ pub fn push(
     })?;
 
     let hash = fingerprint::hash_full(&dest)?;
-    let mtime = mtime_secs(&dest)?;
+    let mtime = super::mtime_secs(&dest).map_err(|source| Error::Io {
+        path: dest.clone(),
+        source,
+    })?;
     let device_path = Path::new("documents").join(filename);
     devices::record_sync(
         conn,
@@ -96,22 +98,6 @@ pub fn push(
         device_path,
         bytes,
     })
-}
-
-// Modification time as whole seconds since the Unix epoch (FAT granularity is
-// 2s anyway). A clock before the epoch can't happen on a real file, so it maps
-// to 0 rather than erroring.
-fn mtime_secs(path: &Path) -> Result<i64> {
-    let modified = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .map_err(|source| Error::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    Ok(modified
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0))
 }
 
 #[cfg(test)]

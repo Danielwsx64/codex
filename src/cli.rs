@@ -229,15 +229,31 @@ pub enum Command {
     Push {
         #[arg(
             value_name = "ID_OR_TITLE",
-            help = "Numeric id, or exact title (case-insensitive)"
+            help = "Numeric id, or exact title (case-insensitive). Omit to pick interactively"
         )]
-        target: String,
+        target: Option<String>,
         #[arg(
             long,
             value_name = "SERIAL_OR_ALIAS",
             help = "Target device (defaults to the only connected device)"
         )]
         device: Option<String>,
+    },
+    #[command(about = "Import a book from a connected device into the catalog")]
+    Pull {
+        #[arg(
+            value_name = "PATH",
+            help = "Path to the book on the device (relative to the mount, e.g. documents/Dune.epub). Omit to pick interactively"
+        )]
+        path: Option<String>,
+        #[arg(
+            long,
+            value_name = "SERIAL_OR_ALIAS",
+            help = "Source device (defaults to the only connected device)"
+        )]
+        device: Option<String>,
+        #[arg(long, help = "Import even if the content is already in the catalog")]
+        force: bool,
     },
     #[command(subcommand, about = "Manage ereaders (devices)")]
     Device(DeviceCmd),

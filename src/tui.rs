@@ -21,6 +21,7 @@ pub mod library;
 pub mod loading;
 pub mod new_catalog;
 pub mod palette;
+pub mod pick;
 pub mod reader;
 pub mod too_small;
 pub mod welcome;
@@ -38,15 +39,15 @@ pub fn run(data_dir: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-struct TerminalGuard {
-    terminal: Terminal<CrosstermBackend<Stdout>>,
+pub(crate) struct TerminalGuard {
+    pub(crate) terminal: Terminal<CrosstermBackend<Stdout>>,
     // Whether we pushed keyboard enhancement flags and must pop them on exit.
     // Only set on terminals that report support, so the pop stays balanced.
     keyboard_enhanced: bool,
 }
 
 impl TerminalGuard {
-    fn enter() -> Result<Self> {
+    pub(crate) fn enter() -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
