@@ -519,6 +519,7 @@ fn dispatch_ls(data_dir: Option<&Path>, catalog_override: Option<&str>, json: bo
     let known = devices::list(&conn).context("while listing known devices")?;
     let mut rows = device::build_device_rows(&detected, &known);
     device::enrich(&mut rows);
+    device::mark_current(&conn, &mut rows);
 
     render::emit(
         json,

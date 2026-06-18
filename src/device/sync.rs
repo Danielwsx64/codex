@@ -145,7 +145,9 @@ pub fn diff(conn: &Connection, serial: &str, mount: &Path, verify: bool) -> Resu
                     candidates: match_index.lookup(&key).to_vec(),
                 });
             }
-            Presence::Both => {}
+            // `Modified` files have a sync row, so the re-push pass below covers
+            // them; `LocalOnly` never appears in a device listing. Both no-ops here.
+            Presence::Both | Presence::Modified | Presence::LocalOnly => {}
         }
     }
 
@@ -193,32 +195,21 @@ pub fn diff(conn: &Connection, serial: &str, mount: &Path, verify: bool) -> Resu
 // but push records exactly what it wrote, so an untouched file matches); `--verify`
 // re-hashes only when the fast-path already looks unchanged.
 fn classify(abs: &Path, s: &SyncedFile, verify: bool) -> Result<Option<PushReason>> {
-    let meta = match std::fs::metadata(abs) {
-        Ok(meta) => meta,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Some(PushReason::Missing));
-        }
-        Err(source) => {
-            return Err(Error::Io {
-                path: abs.to_path_buf(),
-                source,
-            })
-        }
-    };
-    if meta.len() as i64 != s.size {
-        return Ok(Some(PushReason::Modified));
-    }
-    let mtime = super::mtime_secs(abs).map_err(|source| Error::Io {
+    let divergence = super::divergence(abs, s.size, s.mtime).map_err(|source| Error::Io {
         path: abs.to_path_buf(),
         source,
     })?;
-    if mtime != s.mtime {
-        return Ok(Some(PushReason::Modified));
+    match divergence {
+        super::Divergence::Missing => Ok(Some(PushReason::Missing)),
+        super::Divergence::Modified => Ok(Some(PushReason::Modified)),
+        super::Divergence::Current => {
+            if verify && fingerprint::hash_full(abs)? != s.hash {
+                Ok(Some(PushReason::Modified))
+            } else {
+                Ok(None)
+            }
+        }
     }
-    if verify && fingerprint::hash_full(abs)? != s.hash {
-        return Ok(Some(PushReason::Modified));
-    }
-    Ok(None)
 }
 
 fn label_for(title: Option<&str>, device_path: &Path) -> String {

@@ -14,17 +14,28 @@ pub enum Error {
     Catalog(#[from] catalog_books::Error),
     #[error(transparent)]
     Db(#[from] rusqlite::Error),
+    #[error("io error on `{}`: {source}", .path.display())]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-// Whether a file on the device is also in the catalog. `Conflict` is real
-// ambiguity — the device file matches 2+ catalog books — which the listing
-// never resolves on its own.
+// How a book relates to the device and the catalog. `Both`/`Modified`/`Conflict`
+// describe a file on the device (`Modified` = its tracked copy diverged from the
+// last push by size/mtime); `LocalOnly` is the catalog side of the same relation
+// (a book the device does not have) and is only produced by the library-facing
+// query — the device listing never yields it. `Conflict` is real ambiguity (the
+// device file matches 2+ catalog books), which the listing never resolves itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Presence {
     Both,
     DeviceOnly,
+    LocalOnly,
+    Modified,
     Conflict,
 }
 
@@ -33,6 +44,8 @@ impl Presence {
         match self {
             Presence::Both => "both",
             Presence::DeviceOnly => "device_only",
+            Presence::LocalOnly => "local_only",
+            Presence::Modified => "modified",
             Presence::Conflict => "conflict",
         }
     }
@@ -48,13 +61,21 @@ pub struct DeviceBook {
     pub presence: Presence,
     pub matched_book_id: Option<i64>,
     pub matched_title: Option<String>,
+    // Format of the matched catalog book, when a single book matched. Lets the
+    // renderer show both ends ("azw3 → epub") when the formats differ.
+    pub local_format: Option<String>,
 }
 
 pub fn list(conn: &Connection, serial: &str, mount: &Path) -> Result<Vec<DeviceBook>> {
     let books = catalog_books::handle_ls(conn)?;
     let index = MatchIndex::build(&books);
     let titles: HashMap<i64, &str> = books.iter().map(|b| (b.id, b.title.as_str())).collect();
-    let synced = devices::synced_paths(conn, serial)?;
+    let formats: HashMap<i64, &str> = books.iter().map(|b| (b.id, b.format.as_str())).collect();
+    let synced_rows = devices::synced_state(conn, serial)?;
+    let synced: HashMap<&Path, &devices::SyncedFile> = synced_rows
+        .iter()
+        .map(|s| (s.device_path.as_path(), s))
+        .collect();
 
     let mut out = Vec::new();
     for path in super::ebook_files(mount) {
@@ -65,14 +86,18 @@ pub fn list(conn: &Connection, serial: &str, mount: &Path) -> Result<Vec<DeviceB
         let (title, author, format) = read_meta(&path);
         let (presence, matched_book_id) = resolve_presence(
             &device_path,
+            &path,
             title.as_deref(),
             author.as_deref(),
             &synced,
             &index,
-        );
+        )?;
         let matched_title = matched_book_id
             .and_then(|id| titles.get(&id))
             .map(|t| t.to_string());
+        let local_format = matched_book_id
+            .and_then(|id| formats.get(&id))
+            .map(|f| f.to_string());
         out.push(DeviceBook {
             title,
             author,
@@ -81,6 +106,7 @@ pub fn list(conn: &Connection, serial: &str, mount: &Path) -> Result<Vec<DeviceB
             presence,
             matched_book_id,
             matched_title,
+            local_format,
         });
     }
     // Stable order for humans and snapshots; title-less files sort last.
@@ -121,22 +147,33 @@ fn read_meta(path: &Path) -> (Option<String>, Option<String>, String) {
 
 fn resolve_presence(
     device_path: &Path,
+    abs: &Path,
     title: Option<&str>,
     author: Option<&str>,
-    synced: &HashMap<PathBuf, i64>,
+    synced: &HashMap<&Path, &devices::SyncedFile>,
     index: &MatchIndex,
-) -> (Presence, Option<i64>) {
+) -> Result<(Presence, Option<i64>)> {
     // Exact sync state wins: cdx put this file here, so there's nothing to guess.
-    if let Some(&id) = synced.get(device_path) {
-        return (Presence::Both, Some(id));
+    // The fast-path size/mtime check tells `Both` from `Modified`; the file is in
+    // the listing so it exists, making `Missing` unreachable (treat it as `Both`).
+    if let Some(s) = synced.get(device_path) {
+        let presence =
+            match super::divergence(abs, s.size, s.mtime).map_err(|source| Error::Io {
+                path: abs.to_path_buf(),
+                source,
+            })? {
+                super::Divergence::Modified => Presence::Modified,
+                super::Divergence::Current | super::Divergence::Missing => Presence::Both,
+            };
+        return Ok((presence, Some(s.book_id)));
     }
     let Some(title) = title else {
-        return (Presence::DeviceOnly, None);
+        return Ok((Presence::DeviceOnly, None));
     };
     match index.lookup(&normalize_key(title, author)) {
-        [] => (Presence::DeviceOnly, None),
-        [one] => (Presence::Both, Some(*one)),
-        _ => (Presence::Conflict, None),
+        [] => Ok((Presence::DeviceOnly, None)),
+        [one] => Ok((Presence::Both, Some(*one))),
+        _ => Ok((Presence::Conflict, None)),
     }
 }
 
@@ -220,19 +257,23 @@ mod tests {
         assert_eq!(books[0].matched_book_id, None);
     }
 
+    // Record sync state matching what is actually on disk, so the size/mtime
+    // fast-path reads `Both` (an unchanged tracked file).
+    fn record_in_sync(conn: &Connection, mount: &Path, rel: &str, book_id: i64) {
+        let abs = mount.join(rel);
+        let size = fs::metadata(&abs).unwrap().len() as i64;
+        let mtime = super::super::mtime_secs(&abs).unwrap();
+        devices::record_sync(conn, "AAA", book_id, Path::new(rel), "h", size, mtime).unwrap();
+    }
+
     #[test]
     fn sync_state_takes_priority_over_metadata() {
         let (_dir, conn) = fresh();
         devices::record_seen(&conn, "AAA").unwrap();
         // The catalog title deliberately does NOT match the device filename.
         let id = add_book(&conn, "Totally Different Title", None);
-        conn.execute(
-            "INSERT INTO device_books (device_serial, book_id, device_path, hash, size, mtime)
-             VALUES ('AAA', ?1, 'documents/Dune.txt', 'h', 1, 1)",
-            params![id],
-        )
-        .unwrap();
         let mount = make_mount(&["Dune.txt"]);
+        record_in_sync(&conn, mount.path(), "documents/Dune.txt", id);
 
         let books = list(&conn, "AAA", mount.path()).unwrap();
         assert_eq!(books[0].presence, Presence::Both);
@@ -241,6 +282,42 @@ mod tests {
             books[0].matched_title.as_deref(),
             Some("Totally Different Title")
         );
+    }
+
+    #[test]
+    fn diverged_tracked_file_is_modified() {
+        let (_dir, conn) = fresh();
+        devices::record_seen(&conn, "AAA").unwrap();
+        let id = add_book(&conn, "Dune", None);
+        let mount = make_mount(&["Dune.txt"]); // 1 byte on disk
+                                               // Record a size that does not match disk → diverged.
+        devices::record_sync(
+            &conn,
+            "AAA",
+            id,
+            Path::new("documents/Dune.txt"),
+            "h",
+            999,
+            1,
+        )
+        .unwrap();
+
+        let books = list(&conn, "AAA", mount.path()).unwrap();
+        assert_eq!(books[0].presence, Presence::Modified);
+        assert_eq!(books[0].matched_book_id, Some(id));
+    }
+
+    #[test]
+    fn local_format_set_when_catalog_format_differs() {
+        let (_dir, conn) = fresh();
+        // Catalog book is 'txt' (add_book default); device file is an epub.
+        let id = add_book(&conn, "Dune", None);
+        let mount = make_mount(&["Dune.epub"]);
+
+        let books = list(&conn, "AAA", mount.path()).unwrap();
+        assert_eq!(books[0].matched_book_id, Some(id));
+        assert_eq!(books[0].format, "epub");
+        assert_eq!(books[0].local_format.as_deref(), Some("txt"));
     }
 
     #[test]

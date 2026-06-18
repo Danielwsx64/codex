@@ -3,6 +3,7 @@ use rusqlite::{params, Connection};
 use crate::catalog::columns::LibraryColumn;
 
 const KEY_LIBRARY_COLUMNS: &str = "library.columns";
+const KEY_CURRENT_DEVICE: &str = "device.current";
 
 pub fn load_library_columns(conn: &Connection) -> rusqlite::Result<Vec<LibraryColumn>> {
     let raw = match get_value(conn, KEY_LIBRARY_COLUMNS)? {
@@ -29,6 +30,18 @@ pub fn save_library_columns(conn: &Connection, cols: &[LibraryColumn]) -> rusqli
     let slugs: Vec<&str> = cols.iter().map(|c| c.slug()).collect();
     let value = serde_json::to_string(&slugs).expect("LibraryColumn slugs always serialize");
     set_value(conn, KEY_LIBRARY_COLUMNS, &value)
+}
+
+// The current device is the implicit `--device` target for the active catalog.
+// It is set when the sole connected device wins a no-flag resolution and when a
+// device is chosen explicitly (CLI `--device` or a TUI selection), so the "last
+// used" device sticks across runs even when several are connected.
+pub fn load_current_device(conn: &Connection) -> rusqlite::Result<Option<String>> {
+    get_value(conn, KEY_CURRENT_DEVICE)
+}
+
+pub fn save_current_device(conn: &Connection, serial: &str) -> rusqlite::Result<()> {
+    set_value(conn, KEY_CURRENT_DEVICE, serial)
 }
 
 fn get_value(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
@@ -119,5 +132,20 @@ mod tests {
         set_value(&conn, KEY_LIBRARY_COLUMNS, r#"["foo", "bar"]"#).unwrap();
         let cols = load_library_columns(&conn).unwrap();
         assert_eq!(cols, LibraryColumn::DEFAULT.to_vec());
+    }
+
+    #[test]
+    fn current_device_unset_is_none() {
+        let (_dir, conn) = open_fresh();
+        assert_eq!(load_current_device(&conn).unwrap(), None);
+    }
+
+    #[test]
+    fn current_device_round_trips_and_overwrites() {
+        let (_dir, conn) = open_fresh();
+        save_current_device(&conn, "AAA").unwrap();
+        assert_eq!(load_current_device(&conn).unwrap().as_deref(), Some("AAA"));
+        save_current_device(&conn, "BBB").unwrap();
+        assert_eq!(load_current_device(&conn).unwrap().as_deref(), Some("BBB"));
     }
 }

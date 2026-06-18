@@ -690,6 +690,7 @@ struct DeviceLsJson<'a> {
     alias: Option<&'a str>,
     serial: &'a str,
     connected: bool,
+    current: bool,
     mount_path: Option<&'a Path>,
     free_bytes: Option<u64>,
     book_count: Option<usize>,
@@ -707,9 +708,10 @@ pub fn render_device_ls_human<W: Write>(rows: &[DeviceRow], w: &mut W) -> io::Re
     let mut tw = TabWriter::new(w).padding(2);
     writeln!(
         &mut tw,
-        "ALIAS\tSERIAL\tCONNECTED\tMOUNT\tFREE\tBOOKS\tLAST SEEN"
+        "CUR\tALIAS\tSERIAL\tCONNECTED\tMOUNT\tFREE\tBOOKS\tLAST SEEN"
     )?;
     for row in rows {
+        let current = if row.is_current { "*" } else { "" };
         let alias = row.alias.as_deref().unwrap_or(&row.serial);
         let connected = if row.connected { "yes" } else { "no" };
         let mount = row
@@ -727,7 +729,7 @@ pub fn render_device_ls_human<W: Write>(rows: &[DeviceRow], w: &mut W) -> io::Re
             .unwrap_or_else(|| "-".to_string());
         writeln!(
             &mut tw,
-            "{alias}\t{serial}\t{connected}\t{mount}\t{free}\t{books}\t{last_seen}",
+            "{current}\t{alias}\t{serial}\t{connected}\t{mount}\t{free}\t{books}\t{last_seen}",
             serial = row.serial,
             last_seen = row.last_seen_at,
         )?;
@@ -742,6 +744,7 @@ pub fn render_device_ls_jsonl<W: Write>(rows: &[DeviceRow], w: &mut W) -> io::Re
             alias: row.alias.as_deref(),
             serial: &row.serial,
             connected: row.connected,
+            current: row.is_current,
             mount_path: row.mount_path.as_deref(),
             free_bytes: row.free_bytes,
             book_count: row.book_count,
@@ -759,6 +762,9 @@ struct DeviceBookJson<'a> {
     title: Option<&'a str>,
     author: Option<&'a str>,
     format: &'a str,
+    // Catalog-side format when it differs from `format`; lets a consumer see both
+    // ends of a cross-format match.
+    local_format: Option<&'a str>,
     device_path: &'a Path,
     matched_book_id: Option<i64>,
 }
@@ -787,11 +793,18 @@ pub fn render_device_books_human<W: Write>(books: &[DeviceBook], w: &mut W) -> i
 
 pub fn render_device_books_jsonl<W: Write>(books: &[DeviceBook], w: &mut W) -> io::Result<()> {
     for book in books {
+        // Only surface the catalog format when it actually differs from the device
+        // format — otherwise it's noise on the common same-format case.
+        let local_format = book
+            .local_format
+            .as_deref()
+            .filter(|f| !f.eq_ignore_ascii_case(&book.format));
         let value = DeviceBookJson {
             presence: book.presence.as_str(),
             title: book.title.as_deref(),
             author: book.author.as_deref(),
             format: &book.format,
+            local_format,
             device_path: &book.device_path,
             matched_book_id: book.matched_book_id,
         };
@@ -1264,6 +1277,7 @@ mod tests {
             free_bytes: connected.then_some(2_147_483_648),
             book_count: connected.then_some(42),
             last_seen_at: "2026-06-08 12:00:00".to_string(),
+            is_current: false,
         }
     }
 
@@ -1306,8 +1320,29 @@ mod tests {
         assert_eq!(v["serial"], "SERIAL_C");
         assert_eq!(v["alias"], "paperwhite");
         assert_eq!(v["connected"], true);
+        assert_eq!(v["current"], false);
         assert_eq!(v["book_count"], 42);
         assert_eq!(v["free_bytes"], 2_147_483_648u64);
+    }
+
+    #[test]
+    fn device_ls_marks_current_device() {
+        let mut row = device_row("SERIAL_C", Some("paperwhite"), true);
+        row.is_current = true;
+        let rows = vec![row];
+
+        let mut human = Vec::new();
+        render_device_ls_human(&rows, &mut human).unwrap();
+        let text = String::from_utf8(human).unwrap();
+        assert!(text.contains("CUR"));
+        assert!(text.contains('*'));
+
+        let mut jsonl = Vec::new();
+        render_device_ls_jsonl(&rows, &mut jsonl).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(String::from_utf8(jsonl).unwrap().lines().next().unwrap())
+                .unwrap();
+        assert_eq!(v["current"], true);
     }
 
     fn device_book(
@@ -1325,6 +1360,7 @@ mod tests {
             presence,
             matched_book_id: matched,
             matched_title: matched.map(|_| "Catalog Title".to_string()),
+            local_format: None,
         }
     }
 

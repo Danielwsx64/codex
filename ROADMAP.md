@@ -231,7 +231,14 @@ A identidade de um livro entre catálogo e device tem duas camadas:
 - [x] TUI: tela "Devices" — lista devices (alias, conectado ou não);
       `r` renomeia o apelido; Enter abre a visão de livros do device
       selecionado (a navegação resolve a escolha de device sem flag)
-- [ ] TUI: indicadores de presença na visão do device e na Library
+- [x] Device atual: ponteiro por catálogo (chave em `settings`) que vira o
+      alvo `--device` implícito. Vira atual quando só há um device conectado
+      e quando um device é escolhido explicitamente (`--device` no CLI ou
+      seleção na TUI), então o "último usado" persiste entre execuções mesmo
+      com vários conectados. `cdx device ls` (humano + JSONL) e a lista de
+      devices da TUI marcam o atual; `resolve_target` usa o atual antes de
+      cair no caso ambíguo
+- [x] TUI: indicadores de presença na visão do device e na Library
       (quando há device conectado): cada linha marca "both" /
       "local only" / "device only" / "modified" via sync state +
       match normalizado, exibindo o formato de cada ponta quando

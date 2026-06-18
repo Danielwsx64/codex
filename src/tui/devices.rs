@@ -10,7 +10,7 @@ use ratatui::Frame;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
-use crate::catalog::{self, devices};
+use crate::catalog::{self, devices, settings};
 use crate::config::Registry;
 use crate::device;
 use crate::device::books::Presence;
@@ -201,6 +201,7 @@ fn fetch_rows(dir: &Path) -> Result<Vec<device::DeviceRow>, String> {
     let known = devices::list(&conn).map_err(|e| e.to_string())?;
     let mut rows = device::build_device_rows(&detected, &known);
     device::enrich(&mut rows);
+    device::mark_current(&conn, &mut rows);
     Ok(rows)
 }
 
@@ -264,6 +265,11 @@ fn open_books(state: &mut State) -> DevicesAction {
         Ok(conn) => conn,
         Err(err) => return DevicesAction::Status(StatusMessage::error(err.to_string())),
     };
+    // Opening a device's books makes it the current device — the same "last used"
+    // pointer the CLI maintains, so the Library presence indicators follow along.
+    if let Err(error) = settings::save_current_device(&conn, &row.serial) {
+        tracing::warn!(serial = %row.serial, %error, "failed to persist current device");
+    }
     match device::books::list(&conn, &row.serial, &mount) {
         Ok(rows) => {
             state.view = View::Books(BooksView {
@@ -619,9 +625,18 @@ fn device_row_line(row: &device::DeviceRow) -> Line<'static> {
         Span::styled(marker.to_string(), marker_style),
         Span::raw(" "),
         Span::styled(label, label_style),
-        Span::raw("  "),
-        Span::styled(row.serial.clone(), Style::default().fg(Color::DarkGray)),
     ];
+    if row.is_current {
+        spans.push(Span::styled(
+            "  (current)".to_string(),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        row.serial.clone(),
+        Style::default().fg(Color::DarkGray),
+    ));
     if row.connected {
         let free = row
             .free_bytes
@@ -647,7 +662,12 @@ fn device_row_line(row: &device::DeviceRow) -> Line<'static> {
 fn book_row_line(book: &device::books::DeviceBook, selected: bool) -> Line<'static> {
     let (tag, tag_style) = match book.presence {
         Presence::Both => ("both", Style::default().fg(Color::Green)),
-        Presence::DeviceOnly => ("device only", Style::default().fg(Color::DarkGray)),
+        Presence::Modified => ("modified", Style::default().fg(Color::Yellow)),
+        // `LocalOnly` never reaches a device listing; render it like a device-only
+        // file rather than panicking on the exhaustive match.
+        Presence::DeviceOnly | Presence::LocalOnly => {
+            ("device only", Style::default().fg(Color::DarkGray))
+        }
         Presence::Conflict => ("conflict", Style::default().fg(Color::Red)),
     };
     let title = book.title.clone().unwrap_or_else(|| "-".to_string());
@@ -672,10 +692,24 @@ fn book_row_line(book: &device::books::DeviceBook, selected: bool) -> Line<'stat
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(
-            format!("  ({})", book.format),
+            format!(
+                "  ({})",
+                format_pair(&book.format, book.local_format.as_deref())
+            ),
             Style::default().fg(Color::DarkGray),
         ),
     ])
+}
+
+// "epub", or "azw3 → epub" when the device and catalog formats differ — the
+// device format leads since this is the device view.
+fn format_pair(device_format: &str, local_format: Option<&str>) -> String {
+    match local_format {
+        Some(local) if !local.eq_ignore_ascii_case(device_format) => {
+            format!("{device_format} → {local}")
+        }
+        _ => device_format.to_string(),
+    }
 }
 
 // Binary units, mirroring the human renderer in `catalog::render` so the TUI and
@@ -820,6 +854,36 @@ mod tests {
         assert!(state.rename.is_some());
         handle_key(&mut state, key(KeyCode::Esc));
         assert!(state.rename.is_none());
+    }
+
+    #[test]
+    fn open_books_persists_current_device() {
+        let (_tmp, reg) = setup();
+        let mount = tempdir().unwrap();
+        fs::create_dir_all(mount.path().join("documents")).unwrap();
+        let mut state = State::load(&reg);
+        // Point the cursor at a connected device backed by a real temp mount.
+        state.rows = vec![device::DeviceRow {
+            alias: Some("zeta".to_string()),
+            serial: "AAA".to_string(),
+            connected: true,
+            mount_path: Some(mount.path().to_path_buf()),
+            free_bytes: None,
+            book_count: None,
+            last_seen_at: "2026-06-08 12:00:00".to_string(),
+            is_current: false,
+        }];
+        state.cursor = 0;
+
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(matches!(state.view, View::Books(_)));
+
+        let entry = reg.resolve(None).unwrap();
+        let conn = catalog::open_existing(&entry.path).unwrap();
+        assert_eq!(
+            settings::load_current_device(&conn).unwrap().as_deref(),
+            Some("AAA")
+        );
     }
 
     #[test]
@@ -1026,6 +1090,40 @@ mod tests {
         // Each seeded file holds `b"book bytes"` (10 bytes).
         assert!(status.text.contains("removed 1 books"));
         assert!(status.text.contains("10 B"));
+    }
+
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn book_row_line_shows_modified_tag() {
+        let book = device::books::DeviceBook {
+            title: Some("Dune".to_string()),
+            author: Some("Herbert".to_string()),
+            format: "epub".to_string(),
+            device_path: PathBuf::from("documents/Dune.epub"),
+            presence: Presence::Modified,
+            matched_book_id: Some(1),
+            matched_title: Some("Dune".to_string()),
+            local_format: None,
+        };
+        assert!(line_text(&book_row_line(&book, false)).contains("[modified]"));
+    }
+
+    #[test]
+    fn book_row_line_shows_format_pair_when_formats_differ() {
+        let book = device::books::DeviceBook {
+            title: Some("Dune".to_string()),
+            author: None,
+            format: "azw3".to_string(),
+            device_path: PathBuf::from("documents/Dune.azw3"),
+            presence: Presence::Both,
+            matched_book_id: Some(1),
+            matched_title: Some("Dune".to_string()),
+            local_format: Some("epub".to_string()),
+        };
+        assert!(line_text(&book_row_line(&book, false)).contains("(azw3 → epub)"));
     }
 
     #[test]

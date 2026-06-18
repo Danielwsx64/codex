@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -6,7 +6,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
+    Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
 };
 use ratatui::Frame;
 use tui_input::backend::crossterm::EventHandler;
@@ -15,8 +15,9 @@ use tui_input::Input;
 use crate::catalog::books::{self, Book, EmbedStatus};
 use crate::catalog::columns::LibraryColumn;
 use crate::catalog::settings;
-use crate::catalog::{self};
+use crate::catalog::{self, devices};
 use crate::config::Registry;
+use crate::device;
 use crate::embed::job::Job;
 use crate::embed::{self, EmbedOutcome};
 use crate::import;
@@ -321,6 +322,9 @@ pub struct State {
     pub cwd: PathBuf,
     pub columns: Vec<LibraryColumn>,
     pub filter: Option<ActiveFilter>,
+    // Presence of each book against the current device, keyed by book id. Empty
+    // unless a device is current+connected; drives the leading indicator column.
+    pub device_presence: HashMap<i64, device::presence::LibraryPresence>,
 }
 
 #[derive(Debug, Clone)]
@@ -450,6 +454,7 @@ impl State {
             cwd,
             columns: LibraryColumn::DEFAULT.to_vec(),
             filter: None,
+            device_presence: HashMap::new(),
         };
         if let Ok(entry) = registry.resolve(None) {
             state.catalog = Some(CatalogContext {
@@ -484,6 +489,7 @@ impl State {
                 self.load_error = Some(err);
             }
         }
+        self.device_presence = fetch_device_presence(&ctx.dir);
     }
 
     fn reload_columns(&mut self) {
@@ -1215,6 +1221,24 @@ fn search_rows(dir: &Path, criteria: &FilterCriteria) -> std::result::Result<Vec
     books::handle_search(&conn, &criteria.as_filters()).map_err(|e| e.to_string())
 }
 
+// Presence of every catalog book against the current device, or an empty map
+// when no single device is current+connected. Advisory display only: any error
+// (no catalog, scan failure, presence query) collapses to empty so the library
+// always renders.
+fn fetch_device_presence(dir: &Path) -> HashMap<i64, device::presence::LibraryPresence> {
+    let Ok(conn) = catalog::open_existing(dir) else {
+        return HashMap::new();
+    };
+    let detected = device::detect();
+    for found in &detected {
+        let _ = devices::record_seen(&conn, &found.serial);
+    }
+    let Some(dev) = device::current_connected(&conn, &detected) else {
+        return HashMap::new();
+    };
+    device::presence::library_presence(&conn, &dev.serial, &dev.mount_path).unwrap_or_default()
+}
+
 fn remove_book(dir: &Path, id: i64, keep: bool) -> std::result::Result<books::RmOutcome, String> {
     let mut conn = catalog::open_existing(dir).map_err(|e| e.to_string())?;
     books::handle_rm(&mut conn, dir, &id.to_string(), keep).map_err(|e| e.to_string())
@@ -1414,18 +1438,47 @@ fn render_table(frame: &mut Frame<'_>, area: Rect, state: &State) {
     } else {
         state.columns.clone()
     };
-    let header_cells: Vec<&str> = columns.iter().map(|c| c.header()).collect();
+    // The presence indicator is a synthetic leading column — it only shows when a
+    // device is current+connected, and is never part of the persisted columns.
+    let show_presence = !state.device_presence.is_empty();
+
+    let mut header_cells: Vec<Cell> = Vec::with_capacity(columns.len() + 1);
+    if show_presence {
+        header_cells.push(Cell::from(""));
+    }
+    header_cells.extend(columns.iter().map(|c| Cell::from(c.header())));
     let header = Row::new(header_cells).style(
         Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::BOLD),
     );
+
     let rows: Vec<Row<'_>> = state
         .rows
         .iter()
-        .map(|b| Row::new(columns.iter().map(|c| c.render(b)).collect::<Vec<_>>()))
+        .map(|b| {
+            let presence = state.device_presence.get(&b.id);
+            let mut cells: Vec<Cell> = Vec::with_capacity(columns.len() + 1);
+            if show_presence {
+                cells.push(indicator_cell(presence));
+            }
+            for c in &columns {
+                if *c == LibraryColumn::Title {
+                    cells.push(title_cell(b, presence));
+                } else {
+                    cells.push(Cell::from(c.render(b)));
+                }
+            }
+            Row::new(cells)
+        })
         .collect();
-    let widths: Vec<Constraint> = columns.iter().map(|c| c.width()).collect();
+
+    let mut widths: Vec<Constraint> = Vec::with_capacity(columns.len() + 1);
+    if show_presence {
+        widths.push(Constraint::Length(2));
+    }
+    widths.extend(columns.iter().map(|c| c.width()));
+
     let table = Table::new(rows, widths).header(header).highlight_style(
         Style::default()
             .bg(Color::DarkGray)
@@ -1434,6 +1487,43 @@ fn render_table(frame: &mut Frame<'_>, area: Rect, state: &State) {
     let mut s = TableState::default();
     s.select(Some(state.cursor.min(state.rows.len().saturating_sub(1))));
     frame.render_stateful_widget(table, area, &mut s);
+}
+
+// Glyph + color for a book's presence against the current device. `None` (a book
+// somehow absent from the map) and the device-side variants render blank.
+fn indicator(presence: &device::presence::LibraryPresence) -> (&'static str, Color) {
+    use device::books::Presence;
+    match presence.state {
+        Presence::Both => ("●", Color::Green),
+        Presence::Modified => ("▲", Color::Yellow),
+        Presence::LocalOnly => ("○", Color::DarkGray),
+        Presence::DeviceOnly | Presence::Conflict => ("", Color::Reset),
+    }
+}
+
+fn indicator_cell(presence: Option<&device::presence::LibraryPresence>) -> Cell<'static> {
+    match presence {
+        Some(p) => {
+            let (glyph, color) = indicator(p);
+            Cell::from(Span::styled(glyph, Style::default().fg(color)))
+        }
+        None => Cell::from(""),
+    }
+}
+
+// The Title cell, with a dim "(local → device)" suffix when the device copy is a
+// different format from the catalog file.
+fn title_cell(book: &Book, presence: Option<&device::presence::LibraryPresence>) -> Cell<'static> {
+    match presence.and_then(|p| p.device_format.as_deref()) {
+        Some(device_format) => Cell::from(Line::from(vec![
+            Span::raw(book.title.clone()),
+            Span::styled(
+                format!(" ({} → {})", book.format, device_format),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])),
+        None => Cell::from(book.title.clone()),
+    }
 }
 
 fn render_context_menu(frame: &mut Frame<'_>, area: Rect, state: &State, cursor: usize) {
@@ -1784,6 +1874,8 @@ mod tests {
     }
 
     fn setup_with_catalog() -> (tempfile::TempDir, PathBuf, Registry) {
+        // The library refresh now scans for devices; keep tests host-independent.
+        std::env::set_var(device::DISABLE_SCAN_ENV, "1");
         let tmp = tempdir().unwrap();
         let cfg = tmp.path().join("cfg");
         fs::create_dir_all(&cfg).unwrap();
@@ -1828,6 +1920,29 @@ mod tests {
         )
         .unwrap();
         id
+    }
+
+    #[test]
+    fn indicator_glyphs_per_presence_state() {
+        use device::books::Presence;
+        let lp = |state| device::presence::LibraryPresence {
+            state,
+            device_format: None,
+        };
+        assert_eq!(indicator(&lp(Presence::Both)).0, "●");
+        assert_eq!(indicator(&lp(Presence::Modified)).0, "▲");
+        assert_eq!(indicator(&lp(Presence::LocalOnly)).0, "○");
+        // Device-side variants never appear in the library map; render blank.
+        assert_eq!(indicator(&lp(Presence::DeviceOnly)).0, "");
+    }
+
+    #[test]
+    fn load_without_connected_device_has_empty_presence() {
+        // No device is connected (scan disabled), so the indicator column is off.
+        let (_tmp, dir, reg) = setup_with_catalog();
+        insert_book(&dir, "Dune", Some("Herbert"));
+        let state = State::load(&reg);
+        assert!(state.device_presence.is_empty());
     }
 
     #[test]

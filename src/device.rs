@@ -4,12 +4,14 @@ use rusqlite::Connection;
 use thiserror::Error;
 
 use crate::catalog::devices::{self, KnownDevice};
+use crate::catalog::settings;
 use crate::import::Format;
 
 pub mod books;
 pub mod clean;
 pub mod markers;
 pub mod mounts;
+pub mod presence;
 pub mod pull;
 pub mod push;
 pub mod sync;
@@ -51,7 +53,7 @@ pub enum SelectError {
     NoneConnected,
     #[error("device `{target}` is known but not currently connected")]
     NotConnected { target: String },
-    #[error("multiple devices connected; pass --device <alias>:\n{candidates}")]
+    #[error("multiple devices connected; pass --device <alias> (it becomes the current device):\n{candidates}")]
     Ambiguous { candidates: String },
     #[error(transparent)]
     Lookup(#[from] devices::Error),
@@ -63,10 +65,12 @@ pub struct DetectedDevice {
     pub mount_path: PathBuf,
 }
 
-// Pick the device a command targets from the live `detected` set. With a flag,
-// the named device must be both known and currently connected. Without one, the
-// only connected device wins; zero or 2+ devices each fail with a clear message
-// (the ambiguous case lists every candidate so the user can pick).
+// Pick the device a command targets from the live `detected` set, and persist it
+// as the catalog's current device so the choice sticks. With a flag, the named
+// device must be both known and currently connected. Without one, the current
+// device wins when it is connected (so a "last used" device keeps targeting even
+// with several plugged in); otherwise the sole connected device wins and becomes
+// current. Zero or 2+-without-a-current each fail with a clear message.
 pub fn resolve_target(
     conn: &Connection,
     detected: &[DetectedDevice],
@@ -74,20 +78,60 @@ pub fn resolve_target(
 ) -> std::result::Result<DetectedDevice, SelectError> {
     if let Some(target) = flag {
         let serial = devices::resolve_serial(conn, target)?;
-        return detected
+        let device = detected
             .iter()
             .find(|d| d.serial == serial)
             .cloned()
             .ok_or_else(|| SelectError::NotConnected {
                 target: target.to_string(),
-            });
+            })?;
+        remember_current(conn, &device.serial);
+        return Ok(device);
+    }
+    default_device(conn, detected)
+}
+
+fn default_device(
+    conn: &Connection,
+    detected: &[DetectedDevice],
+) -> std::result::Result<DetectedDevice, SelectError> {
+    // A connected current device keeps winning without rewriting the setting.
+    if let Some(current) = settings::load_current_device(conn).ok().flatten() {
+        if let Some(device) = detected.iter().find(|d| d.serial == current) {
+            return Ok(device.clone());
+        }
     }
     match detected {
         [] => Err(SelectError::NoneConnected),
-        [only] => Ok(only.clone()),
+        [only] => {
+            remember_current(conn, &only.serial);
+            Ok(only.clone())
+        }
         many => Err(SelectError::Ambiguous {
             candidates: candidate_labels(conn, many),
         }),
+    }
+}
+
+// The current device for display: the stored current when connected, else the
+// sole connected device. Never writes — callers on a render/refresh path (the
+// Library presence indicators) must not touch the DB. Returns `None` when the
+// target is ambiguous (2+ connected without a current) or nothing is connected.
+pub fn current_connected(conn: &Connection, detected: &[DetectedDevice]) -> Option<DetectedDevice> {
+    if let Some(current) = settings::load_current_device(conn).ok().flatten() {
+        if let Some(device) = detected.iter().find(|d| d.serial == current) {
+            return Some(device.clone());
+        }
+    }
+    match detected {
+        [only] => Some(only.clone()),
+        _ => None,
+    }
+}
+
+fn remember_current(conn: &Connection, serial: &str) {
+    if let Err(error) = settings::save_current_device(conn, serial) {
+        tracing::warn!(%serial, %error, "failed to persist current device");
     }
 }
 
@@ -190,6 +234,8 @@ pub struct DeviceRow {
     pub free_bytes: Option<u64>,
     pub book_count: Option<usize>,
     pub last_seen_at: String,
+    // The catalog's current device — the implicit `--device` target.
+    pub is_current: bool,
 }
 
 // Merge known (DB, authoritative + already sorted) with detected (live). Every
@@ -212,9 +258,21 @@ pub fn build_device_rows(detected: &[DetectedDevice], known: &[KnownDevice]) -> 
                 free_bytes: None,
                 book_count: None,
                 last_seen_at: k.last_seen_at.clone(),
+                is_current: false,
             }
         })
         .collect()
+}
+
+// Flag the row whose serial is the catalog's stored current device. A read miss
+// (no setting / DB error) simply leaves every row unmarked.
+pub fn mark_current(conn: &Connection, rows: &mut [DeviceRow]) {
+    let Some(current) = settings::load_current_device(conn).ok().flatten() else {
+        return;
+    };
+    for row in rows.iter_mut() {
+        row.is_current = row.serial == current;
+    }
 }
 
 // Fill in free space and book count for connected devices. A flaky mount must
@@ -292,6 +350,36 @@ pub(crate) fn mtime_secs(path: &Path) -> std::result::Result<i64, std::io::Error
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0))
+}
+
+// Whether a tracked device file still matches the size+mtime recorded when it
+// was last pushed. Hashing stays out of here (USB is slow) — `sync::classify`
+// layers its `--verify` hash check on top of a `Current` verdict. Shared by the
+// sync diff and the presence indicators so both read divergence the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Divergence {
+    Current,
+    Modified,
+    Missing,
+}
+
+pub(crate) fn divergence(
+    abs: &Path,
+    size: i64,
+    mtime: i64,
+) -> std::result::Result<Divergence, std::io::Error> {
+    let meta = match std::fs::metadata(abs) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Divergence::Missing),
+        Err(e) => return Err(e),
+    };
+    if meta.len() as i64 != size {
+        return Ok(Divergence::Modified);
+    }
+    if mtime_secs(abs)? != mtime {
+        return Ok(Divergence::Modified);
+    }
+    Ok(Divergence::Current)
 }
 
 #[cfg(all(test, unix))]
@@ -500,6 +588,117 @@ garbage-line
         let (_dir, conn) = fresh_conn();
         let err = resolve_target(&conn, &[], Some("ghost")).unwrap_err();
         assert!(matches!(err, SelectError::Lookup(_)));
+    }
+
+    #[test]
+    fn resolve_target_sole_device_becomes_current() {
+        let (_dir, conn) = fresh_conn();
+        let detected = vec![detected("AAA", "/mnt/k")];
+        resolve_target(&conn, &detected, None).unwrap();
+        assert_eq!(
+            settings::load_current_device(&conn).unwrap().as_deref(),
+            Some("AAA")
+        );
+    }
+
+    #[test]
+    fn resolve_target_flag_persists_current() {
+        let (_dir, conn) = fresh_conn();
+        devices::record_seen(&conn, "AAA").unwrap();
+        devices::set_alias(&conn, "AAA", "paperwhite").unwrap();
+        let detected = vec![detected("AAA", "/mnt/a")];
+        resolve_target(&conn, &detected, Some("paperwhite")).unwrap();
+        assert_eq!(
+            settings::load_current_device(&conn).unwrap().as_deref(),
+            Some("AAA")
+        );
+    }
+
+    #[test]
+    fn resolve_target_connected_current_wins_over_ambiguity() {
+        let (_dir, conn) = fresh_conn();
+        settings::save_current_device(&conn, "BBB").unwrap();
+        let detected = vec![detected("AAA", "/mnt/a"), detected("BBB", "/mnt/b")];
+        // Two connected, but the stored current is among them: no error, no rewrite.
+        let target = resolve_target(&conn, &detected, None).unwrap();
+        assert_eq!(target.serial, "BBB");
+    }
+
+    #[test]
+    fn resolve_target_disconnected_current_falls_back_to_sole() {
+        let (_dir, conn) = fresh_conn();
+        settings::save_current_device(&conn, "GONE").unwrap();
+        let detected = vec![detected("AAA", "/mnt/a")];
+        let target = resolve_target(&conn, &detected, None).unwrap();
+        assert_eq!(target.serial, "AAA");
+        // The sole connected device takes over as current.
+        assert_eq!(
+            settings::load_current_device(&conn).unwrap().as_deref(),
+            Some("AAA")
+        );
+    }
+
+    #[test]
+    fn resolve_target_disconnected_current_with_two_is_ambiguous() {
+        let (_dir, conn) = fresh_conn();
+        settings::save_current_device(&conn, "GONE").unwrap();
+        let detected = vec![detected("AAA", "/mnt/a"), detected("BBB", "/mnt/b")];
+        let err = resolve_target(&conn, &detected, None).unwrap_err();
+        assert!(matches!(err, SelectError::Ambiguous { .. }));
+    }
+
+    #[test]
+    fn current_connected_prefers_stored_current_without_writing() {
+        let (_dir, conn) = fresh_conn();
+        settings::save_current_device(&conn, "BBB").unwrap();
+        let detected = vec![detected("AAA", "/mnt/a"), detected("BBB", "/mnt/b")];
+        assert_eq!(
+            current_connected(&conn, &detected).map(|d| d.serial),
+            Some("BBB".to_string())
+        );
+    }
+
+    #[test]
+    fn current_connected_is_none_when_ambiguous_and_never_writes() {
+        let (_dir, conn) = fresh_conn();
+        let detected = vec![detected("AAA", "/mnt/a"), detected("BBB", "/mnt/b")];
+        assert!(current_connected(&conn, &detected).is_none());
+        // Display path must not persist a current device.
+        assert_eq!(settings::load_current_device(&conn).unwrap(), None);
+    }
+
+    #[test]
+    fn current_connected_uses_sole_device_without_writing() {
+        let (_dir, conn) = fresh_conn();
+        let detected = vec![detected("AAA", "/mnt/a")];
+        assert_eq!(
+            current_connected(&conn, &detected).map(|d| d.serial),
+            Some("AAA".to_string())
+        );
+        assert_eq!(settings::load_current_device(&conn).unwrap(), None);
+    }
+
+    #[test]
+    fn divergence_detects_current_modified_and_missing() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("f.bin");
+        fs::write(&path, b"hello").unwrap();
+        let size = fs::metadata(&path).unwrap().len() as i64;
+        let mtime = mtime_secs(&path).unwrap();
+
+        assert_eq!(divergence(&path, size, mtime).unwrap(), Divergence::Current);
+        assert_eq!(
+            divergence(&path, size + 1, mtime).unwrap(),
+            Divergence::Modified
+        );
+        assert_eq!(
+            divergence(&path, size, mtime + 100).unwrap(),
+            Divergence::Modified
+        );
+        assert_eq!(
+            divergence(&dir.path().join("missing.bin"), size, mtime).unwrap(),
+            Divergence::Missing
+        );
     }
 
     #[test]
