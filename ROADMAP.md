@@ -249,6 +249,11 @@ A identidade de um livro entre catálogo e device tem duas camadas:
       o que está marcado, progresso linha a linha
 - [x] TUI: registrar `:devices` no command palette + ativar link
       "Devices" na welcome
+- [x] TUI: push da Library — `p` na tabela (e item "Push to device" no
+      menu de ações) copia o livro selecionado pro device atual após
+      confirmação, reusando `cdx push`; a navegação resolve a escolha de
+      device sem flag e o cabeçalho mostra o device atual conectado
+      (alias + ●)
 
 ## v0.5 — Curadoria: duplicatas
 

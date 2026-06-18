@@ -62,6 +62,10 @@ const TABLE_BINDINGS: &[Binding] = &[
         desc: "embed metadata into all files",
     },
     Binding {
+        keys: "p",
+        desc: "push selected book to device",
+    },
+    Binding {
         keys: "/",
         desc: "quick filter (Esc clears when filtered)",
     },
@@ -143,6 +147,17 @@ const CONFIRM_RM_BINDINGS: &[Binding] = &[
     Binding {
         keys: "k",
         desc: "delete row, keep file in cwd",
+    },
+    Binding {
+        keys: "n / Esc",
+        desc: "cancel",
+    },
+];
+
+const CONFIRM_PUSH_BINDINGS: &[Binding] = &[
+    Binding {
+        keys: "y / Enter",
+        desc: "push book to device",
     },
     Binding {
         keys: "n / Esc",
@@ -266,6 +281,10 @@ pub fn help_sections(state: &State) -> Vec<Section> {
             title: "Confirm remove",
             bindings: CONFIRM_RM_BINDINGS,
         }],
+        Some(Overlay::ConfirmPush { .. }) => vec![Section {
+            title: "Confirm push",
+            bindings: CONFIRM_PUSH_BINDINGS,
+        }],
         Some(Overlay::AddTree(_)) => vec![Section {
             title: "Add files",
             bindings: ADD_TREE_BINDINGS,
@@ -325,6 +344,10 @@ pub struct State {
     // Presence of each book against the current device, keyed by book id. Empty
     // unless a device is current+connected; drives the leading indicator column.
     pub device_presence: HashMap<i64, device::presence::LibraryPresence>,
+    // Alias (or serial) of the current+connected device, for the header badge.
+    // None when no single device is current+connected. Set during refresh()
+    // alongside device_presence; render reads it without touching the DB.
+    pub current_device_label: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -387,6 +410,10 @@ pub enum Overlay {
         id: i64,
         title: String,
     },
+    ConfirmPush {
+        id: i64,
+        title: String,
+    },
     AddTree(AddTreeState),
     AddResult(add_result::State),
     Edit(Box<edit::State>),
@@ -418,6 +445,7 @@ pub enum MenuItem {
     Inspect,
     Edit,
     SyncEmbed,
+    Push,
     Delete,
 }
 
@@ -427,6 +455,7 @@ const MENU_ITEMS: &[(MenuItem, &str)] = &[
     (MenuItem::Inspect, "Inspect"),
     (MenuItem::Edit, "Edit metadata"),
     (MenuItem::SyncEmbed, "Sync embed"),
+    (MenuItem::Push, "Push to device"),
     (MenuItem::Delete, "Delete"),
 ];
 
@@ -455,6 +484,7 @@ impl State {
             columns: LibraryColumn::DEFAULT.to_vec(),
             filter: None,
             device_presence: HashMap::new(),
+            current_device_label: None,
         };
         if let Ok(entry) = registry.resolve(None) {
             state.catalog = Some(CatalogContext {
@@ -489,7 +519,9 @@ impl State {
                 self.load_error = Some(err);
             }
         }
-        self.device_presence = fetch_device_presence(&ctx.dir);
+        let snapshot = fetch_device_presence(&ctx.dir);
+        self.device_presence = snapshot.presence;
+        self.current_device_label = snapshot.label;
     }
 
     fn reload_columns(&mut self) {
@@ -534,6 +566,7 @@ pub fn handle_key(state: &mut State, key: KeyEvent) -> LibraryAction {
             open_embed_job(state)
         }
         KeyCode::Char('a') => open_add_tree(state),
+        KeyCode::Char('p') => open_confirm_push(state),
         KeyCode::Char('d') | KeyCode::Delete => open_confirm_rm(state),
         KeyCode::Char('/') => open_filter_input(state),
         KeyCode::Esc => {
@@ -588,6 +621,7 @@ fn handle_overlay_key(state: &mut State, key: KeyEvent) -> LibraryAction {
             _ => LibraryAction::None,
         },
         Some(Overlay::ConfirmRm { id, .. }) => handle_confirm_key(state, key, id),
+        Some(Overlay::ConfirmPush { id, .. }) => handle_confirm_push_key(state, key, id),
         Some(Overlay::AddTree(_)) => handle_tree_key(state, key),
         Some(Overlay::AddResult(_)) => handle_add_result_key(state, key),
         Some(Overlay::Edit(_)) => handle_edit_key(state, key),
@@ -712,6 +746,7 @@ fn run_menu_item(state: &mut State, item: MenuItem) -> LibraryAction {
         MenuItem::Inspect => open_inspect(state),
         MenuItem::Edit => open_edit_from_table(state),
         MenuItem::SyncEmbed => embed_from_table(state),
+        MenuItem::Push => open_confirm_push(state),
         MenuItem::Delete => open_confirm_rm(state),
     }
 }
@@ -1047,6 +1082,49 @@ fn do_remove(state: &mut State, id: i64, keep: bool) -> LibraryAction {
     }
 }
 
+fn open_confirm_push(state: &mut State) -> LibraryAction {
+    let Some(book) = state.rows.get(state.cursor) else {
+        return LibraryAction::None;
+    };
+    state.overlay = Some(Overlay::ConfirmPush {
+        id: book.id,
+        title: book.title.clone(),
+    });
+    LibraryAction::None
+}
+
+fn handle_confirm_push_key(state: &mut State, key: KeyEvent, id: i64) -> LibraryAction {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Enter => {
+            state.overlay = None;
+            do_push(state, id)
+        }
+        KeyCode::Char('n') | KeyCode::Esc => {
+            state.overlay = None;
+            LibraryAction::None
+        }
+        _ => LibraryAction::None,
+    }
+}
+
+fn do_push(state: &mut State, id: i64) -> LibraryAction {
+    let Some(ctx) = state.catalog.clone() else {
+        return LibraryAction::Status(StatusMessage::error("no catalog selected"));
+    };
+    match push_book(&ctx.dir, id) {
+        Ok(out) => {
+            // Refresh flips the pushed row's indicator (○ → ●) and updates the badge.
+            state.refresh();
+            LibraryAction::Status(StatusMessage::info(format!(
+                "pushed `{}` → {}",
+                out.title,
+                out.device_path.display()
+            )))
+        }
+        Err(err) => LibraryAction::Status(StatusMessage::error(err)),
+    }
+}
+
 fn open_add_tree(state: &mut State) -> LibraryAction {
     if state.catalog.is_none() {
         return LibraryAction::Status(StatusMessage::error("no catalog selected"));
@@ -1225,23 +1303,56 @@ fn search_rows(dir: &Path, criteria: &FilterCriteria) -> std::result::Result<Vec
 // when no single device is current+connected. Advisory display only: any error
 // (no catalog, scan failure, presence query) collapses to empty so the library
 // always renders.
-fn fetch_device_presence(dir: &Path) -> HashMap<i64, device::presence::LibraryPresence> {
+#[derive(Default)]
+struct DevicePresenceSnapshot {
+    presence: HashMap<i64, device::presence::LibraryPresence>,
+    label: Option<String>,
+}
+
+fn fetch_device_presence(dir: &Path) -> DevicePresenceSnapshot {
     let Ok(conn) = catalog::open_existing(dir) else {
-        return HashMap::new();
+        return DevicePresenceSnapshot::default();
     };
     let detected = device::detect();
     for found in &detected {
         let _ = devices::record_seen(&conn, &found.serial);
     }
     let Some(dev) = device::current_connected(&conn, &detected) else {
-        return HashMap::new();
+        return DevicePresenceSnapshot::default();
     };
-    device::presence::library_presence(&conn, &dev.serial, &dev.mount_path).unwrap_or_default()
+    DevicePresenceSnapshot {
+        presence: device::presence::library_presence(&conn, &dev.serial, &dev.mount_path)
+            .unwrap_or_default(),
+        label: Some(device_label(&conn, &dev.serial)),
+    }
+}
+
+// Alias when one is set, else the serial — the badge label for a device.
+fn device_label(conn: &rusqlite::Connection, serial: &str) -> String {
+    devices::list(conn)
+        .ok()
+        .and_then(|known| {
+            known
+                .into_iter()
+                .find(|d| d.serial == serial)
+                .and_then(|d| d.alias)
+        })
+        .unwrap_or_else(|| serial.to_string())
 }
 
 fn remove_book(dir: &Path, id: i64, keep: bool) -> std::result::Result<books::RmOutcome, String> {
     let mut conn = catalog::open_existing(dir).map_err(|e| e.to_string())?;
     books::handle_rm(&mut conn, dir, &id.to_string(), keep).map_err(|e| e.to_string())
+}
+
+// Resolve the current/sole device (remembering it as current) and copy the book
+// onto it. Both error types are flattened to display strings for the status line.
+fn push_book(dir: &Path, id: i64) -> std::result::Result<device::push::PushOutcome, String> {
+    let conn = catalog::open_existing(dir).map_err(|e| e.to_string())?;
+    let detected = device::detect();
+    let dev = device::resolve_target(&conn, &detected, None).map_err(|e| e.to_string())?;
+    device::push::push(&conn, dir, &dev.serial, &dev.mount_path, &id.to_string())
+        .map_err(|e| e.to_string())
 }
 
 fn import_files(dir: &Path, paths: &[PathBuf]) -> std::result::Result<books::AddOutcome, String> {
@@ -1324,6 +1435,16 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
+    // Badge appears only when a current device is connected (● in green,
+    // matching the Presence::Both glyph/color vocabulary).
+    if let Some(label) = &state.current_device_label {
+        header_spans.push(Span::styled(
+            format!("  ● {label}"),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     let header = Paragraph::new(Line::from(header_spans));
     frame.render_widget(header, layout[0]);
 
@@ -1364,6 +1485,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
             absolute_path,
         }) => render_inspect_modal(frame, area, book.as_ref(), absolute_path),
         Some(Overlay::ConfirmRm { id, title }) => render_confirm_modal(frame, area, *id, title),
+        Some(Overlay::ConfirmPush { id, title }) => {
+            render_confirm_push_modal(frame, area, *id, title)
+        }
         Some(Overlay::AddTree(tree)) => render_tree_modal(frame, area, tree),
         Some(Overlay::AddResult(result)) => add_result::render(frame, area, result),
         Some(Overlay::Edit(edit_state)) => edit::render(frame, area, edit_state.as_ref()),
@@ -1780,6 +1904,22 @@ fn render_confirm_modal(frame: &mut Frame<'_>, area: Rect, id: i64, title: &str)
     render_modal(frame, area, "confirm", lines);
 }
 
+fn render_confirm_push_modal(frame: &mut Frame<'_>, area: Rect, id: i64, title: &str) {
+    let lines = vec![
+        Line::from(Span::raw(format!(
+            "Push book `{title}` (id {id}) to current device?"
+        ))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("y", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("/Enter — push   "),
+            Span::styled("n", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("/Esc — cancel"),
+        ]),
+    ];
+    render_modal(frame, area, "confirm", lines);
+}
+
 fn render_tree_modal(frame: &mut Frame<'_>, area: Rect, tree: &AddTreeState) {
     let target_w = area.width.saturating_mul(4) / 5;
     let target_h = area.height.saturating_mul(4) / 5;
@@ -1934,6 +2074,37 @@ mod tests {
         assert_eq!(indicator(&lp(Presence::LocalOnly)).0, "○");
         // Device-side variants never appear in the library map; render blank.
         assert_eq!(indicator(&lp(Presence::DeviceOnly)).0, "");
+    }
+
+    #[test]
+    fn device_label_prefers_alias_then_serial() {
+        let (_tmp, dir, _reg) = setup_with_catalog();
+        let conn = catalog::open_existing(&dir).unwrap();
+        devices::record_seen(&conn, "SERIAL-1").unwrap();
+        devices::record_seen(&conn, "SERIAL-2").unwrap();
+        devices::set_alias(&conn, "SERIAL-1", "kindle").unwrap();
+
+        assert_eq!(device_label(&conn, "SERIAL-1"), "kindle");
+        // No alias set → falls back to the serial.
+        assert_eq!(device_label(&conn, "SERIAL-2"), "SERIAL-2");
+    }
+
+    #[test]
+    fn fetch_device_presence_empty_without_device() {
+        // setup_with_catalog sets DISABLE_SCAN_ENV, so detect() finds nothing.
+        let (_tmp, dir, _reg) = setup_with_catalog();
+        let snapshot = fetch_device_presence(&dir);
+        assert!(snapshot.presence.is_empty());
+        assert!(snapshot.label.is_none());
+    }
+
+    #[test]
+    fn push_book_surfaces_no_device_error() {
+        // With the device scan disabled, resolve_target reports "no device".
+        let (_tmp, dir, _reg) = setup_with_catalog();
+        let id = insert_book_with_file(&dir, "Dune", "Frank Herbert");
+        let err = push_book(&dir, id).unwrap_err();
+        assert!(err.contains("no device"), "unexpected error: {err}");
     }
 
     #[test]
