@@ -12,6 +12,7 @@ use crate::catalog::columns::LibraryColumn;
 use crate::catalog::devices::AliasOutcome;
 use crate::catalog::handlers::{AddOutcome, CatalogRow, InitOutcome, RmOutcome, UseOutcome};
 use crate::device::books::DeviceBook;
+use crate::device::push::PushOutcome;
 use crate::device::DeviceRow;
 
 // Single funnel used by every dispatcher that picks between a human and a
@@ -830,6 +831,46 @@ pub fn render_alias_jsonl<W: Write>(outcome: &AliasOutcome, w: &mut W) -> io::Re
             .previous
             .as_deref()
             .filter(|prev| *prev != outcome.alias),
+    };
+    serde_json::to_writer(&mut *w, &value)?;
+    writeln!(w)
+}
+
+#[derive(Serialize)]
+struct PushJson<'a> {
+    book_id: i64,
+    title: &'a str,
+    serial: &'a str,
+    device_path: &'a Path,
+    bytes: u64,
+}
+
+pub fn render_push_human<W: Write>(
+    outcome: &PushOutcome,
+    device_label: &str,
+    w: &mut W,
+) -> io::Result<()> {
+    writeln!(
+        w,
+        "Pushed \"{}\" → {}:{} ({})",
+        outcome.title,
+        device_label,
+        outcome.device_path.display(),
+        format_bytes(outcome.bytes),
+    )
+}
+
+pub fn render_push_jsonl<W: Write>(
+    outcome: &PushOutcome,
+    serial: &str,
+    w: &mut W,
+) -> io::Result<()> {
+    let value = PushJson {
+        book_id: outcome.book_id,
+        title: &outcome.title,
+        serial,
+        device_path: &outcome.device_path,
+        bytes: outcome.bytes,
     };
     serde_json::to_writer(&mut *w, &value)?;
     writeln!(w)

@@ -225,6 +225,20 @@ pub enum Command {
     },
     #[command(subcommand, about = "Manage metadata embedded into book files")]
     Embed(EmbedCmd),
+    #[command(about = "Copy a book from the catalog to a connected device")]
+    Push {
+        #[arg(
+            value_name = "ID_OR_TITLE",
+            help = "Numeric id, or exact title (case-insensitive)"
+        )]
+        target: String,
+        #[arg(
+            long,
+            value_name = "SERIAL_OR_ALIAS",
+            help = "Target device (defaults to the only connected device)"
+        )]
+        device: Option<String>,
+    },
     #[command(subcommand, about = "Manage ereaders (devices)")]
     Device(DeviceCmd),
 }

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -67,6 +67,41 @@ pub fn synced_paths(conn: &Connection, serial: &str) -> rusqlite::Result<HashMap
         Ok((PathBuf::from(path), book_id))
     })?;
     rows.collect()
+}
+
+// Write the exact sync state for a file cdx put on the device. Keyed by
+// (serial, book_id), so re-pushing the same book updates the single row rather
+// than duplicating it. `device_path` is stored relative to the mount root
+// (e.g. `documents/Author_-_Title.epub`), matching how `synced_paths` reads it.
+pub fn record_sync(
+    conn: &Connection,
+    serial: &str,
+    book_id: i64,
+    device_path: &Path,
+    hash: &str,
+    size: i64,
+    mtime: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO device_books
+            (device_serial, book_id, device_path, hash, size, mtime, synced_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+         ON CONFLICT(device_serial, book_id) DO UPDATE SET
+            device_path = excluded.device_path,
+            hash        = excluded.hash,
+            size        = excluded.size,
+            mtime       = excluded.mtime,
+            synced_at   = excluded.synced_at",
+        params![
+            serial,
+            book_id,
+            device_path.to_string_lossy(),
+            hash,
+            size,
+            mtime
+        ],
+    )?;
+    Ok(())
 }
 
 pub fn set_alias(conn: &Connection, serial: &str, alias: &str) -> rusqlite::Result<bool> {
@@ -335,6 +370,80 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM device_books", [], |r| r.get(0))
             .unwrap();
         assert_eq!(left, 0);
+    }
+
+    fn insert_book(conn: &Connection) -> i64 {
+        conn.execute(
+            "INSERT INTO books (title, author, format, file_path) VALUES ('B', 'A', 'epub', '')",
+            [],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn record_sync_inserts_then_round_trips_through_synced_paths() {
+        let (_dir, conn) = open_fresh();
+        record_seen(&conn, "AAA").unwrap();
+        let book_id = insert_book(&conn);
+
+        record_sync(
+            &conn,
+            "AAA",
+            book_id,
+            Path::new("documents/B.epub"),
+            "hash1",
+            10,
+            1_700_000_000,
+        )
+        .unwrap();
+
+        let map = synced_paths(&conn, "AAA").unwrap();
+        assert_eq!(map.get(&PathBuf::from("documents/B.epub")), Some(&book_id));
+    }
+
+    #[test]
+    fn record_sync_upserts_on_repush() {
+        let (_dir, conn) = open_fresh();
+        record_seen(&conn, "AAA").unwrap();
+        let book_id = insert_book(&conn);
+
+        record_sync(
+            &conn,
+            "AAA",
+            book_id,
+            Path::new("documents/old.epub"),
+            "hash1",
+            10,
+            1,
+        )
+        .unwrap();
+        record_sync(
+            &conn,
+            "AAA",
+            book_id,
+            Path::new("documents/new.epub"),
+            "hash2",
+            20,
+            2,
+        )
+        .unwrap();
+
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM device_books", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "re-push must update the single row, not duplicate");
+
+        let (path, hash, size): (String, String, i64) = conn
+            .query_row(
+                "SELECT device_path, hash, size FROM device_books WHERE book_id = ?1",
+                params![book_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(path, "documents/new.epub");
+        assert_eq!(hash, "hash2");
+        assert_eq!(size, 20);
     }
 
     #[test]

@@ -54,6 +54,54 @@ fn dispatch_books(
     Ok(())
 }
 
+pub fn dispatch_push(
+    target: &str,
+    device: Option<&str>,
+    data_dir: Option<&Path>,
+    catalog_override: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let registry = load(data_dir)?;
+    let entry = resolve_entry(&registry, catalog_override)?.clone();
+    let conn = catalog::open_existing(&entry.path)
+        .with_context(|| format!("failed to open catalog `{}`", entry.name))?;
+
+    let detected = device::detect();
+    // Mirror the other device commands: keep aliases/last_seen fresh.
+    for found in &detected {
+        devices::record_seen(&conn, &found.serial)
+            .with_context(|| format!("while recording device `{}`", found.serial))?;
+    }
+
+    let target_device = device::resolve_target(&conn, &detected, device)?;
+    let label = device_label(&conn, &target_device.serial);
+    let outcome = device::push::push(
+        &conn,
+        &entry.path,
+        &target_device.serial,
+        &target_device.mount_path,
+        target,
+    )
+    .with_context(|| format!("while pushing `{target}` to device `{label}`"))?;
+
+    render::emit(
+        json,
+        |w| render::render_push_human(&outcome, &label, w),
+        |w| render::render_push_jsonl(&outcome, &target_device.serial, w),
+    )?;
+    Ok(())
+}
+
+// Friendly name for messages: the alias when set, else the bare serial.
+fn device_label(conn: &rusqlite::Connection, serial: &str) -> String {
+    devices::list(conn)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|k| k.serial == serial)
+        .and_then(|k| k.alias)
+        .unwrap_or_else(|| serial.to_string())
+}
+
 fn dispatch_alias(
     target: &str,
     new_alias: &str,

@@ -123,6 +123,13 @@ pub fn run() -> Result<()> {
         Some(Command::Embed(EmbedCmd::Sync)) => {
             cli::embed::dispatch_sync(cli.data_dir.as_deref(), cli.catalog.as_deref(), cli.json)
         }
+        Some(Command::Push { target, device }) => cli::device::dispatch_push(
+            &target,
+            device.as_deref(),
+            cli.data_dir.as_deref(),
+            cli.catalog.as_deref(),
+            cli.json,
+        ),
         Some(Command::Device(cmd)) => cli::device::dispatch(
             cmd,
             cli.data_dir.as_deref(),

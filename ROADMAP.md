@@ -196,7 +196,7 @@ A identidade de um livro entre catálogo e device tem duas camadas:
       `push`, `pull` e `sync`. Um device conectado → default
       implícito; dois ou mais sem o flag → erro claro listando os
       candidatos (nunca escolher sozinho)
-- [ ] `cdx push <id|título> [--device <alias>]` — copia arquivo do
+- [x] `cdx push <id|título> [--device <alias>]` — copia arquivo do
       catálogo pro device e grava o sync state (hash/size/mtime)
 - [ ] `cdx pull <path> [--device <alias>]` — importa livro do device
       reusando o pipeline do `cdx add` (incluindo dedup por hash) e

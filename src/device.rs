@@ -9,6 +9,7 @@ use crate::import::Format;
 pub mod books;
 pub mod markers;
 pub mod mounts;
+pub mod push;
 pub mod sysfs;
 
 pub const AMAZON_VENDOR_ID: &str = "1949";
