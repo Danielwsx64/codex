@@ -477,8 +477,9 @@ substring. `author` é coluna única (um livro cai em uma pasta);
       sai do agrupamento → volta à welcome.
 - [x] TUI: `/` dentro de uma pasta filtra os livros do grupo em memória,
       sem alargar o escopo exato da pasta.
-- [ ] (follow-up) agrupar por `publisher`/`language` — exige estender
-      `SearchFilters`/`FilterCriteria`/`handle_search`; fora desta entrega.
+- [x] agrupar também por `publisher`/`language`/`series`/`format` — reusa o
+      caminho exato de `books_in_group` (não depende de `SearchFilters`); o CLI
+      (`cdx groups --by …`) e o seletor `g` da TUI ganham as novas opções.
 
 ## v1.0 — Estável
 

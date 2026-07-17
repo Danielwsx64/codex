@@ -304,7 +304,11 @@ pub enum Command {
     },
     #[command(about = "List book groups (folders) by a metadata field")]
     Groups {
-        #[arg(long, value_enum, help = "Field to group by: author, tag, or rating")]
+        #[arg(
+            long,
+            value_enum,
+            help = "Field to group by: author, tag, rating, publisher, language, series, or format"
+        )]
         by: GroupByArg,
     },
 }
@@ -321,14 +325,23 @@ pub enum GroupByArg {
     Author,
     Tag,
     Rating,
+    Publisher,
+    Language,
+    Series,
+    Format,
 }
 
 impl From<GroupByArg> for crate::catalog::groups::GroupBy {
     fn from(by: GroupByArg) -> Self {
+        use crate::catalog::groups::GroupBy;
         match by {
-            GroupByArg::Author => crate::catalog::groups::GroupBy::Author,
-            GroupByArg::Tag => crate::catalog::groups::GroupBy::Tag,
-            GroupByArg::Rating => crate::catalog::groups::GroupBy::Rating,
+            GroupByArg::Author => GroupBy::Author,
+            GroupByArg::Tag => GroupBy::Tag,
+            GroupByArg::Rating => GroupBy::Rating,
+            GroupByArg::Publisher => GroupBy::Publisher,
+            GroupByArg::Language => GroupBy::Language,
+            GroupByArg::Series => GroupBy::Series,
+            GroupByArg::Format => GroupBy::Format,
         }
     }
 }

@@ -4,14 +4,18 @@ use rusqlite::Connection;
 use crate::catalog::books::{row_to_book, Book, Error, Result};
 use crate::catalog::tags;
 
-// The metadata field a "folder" view groups books by. Author and rating are
-// scalar columns on `books`; tags is many-to-many via `book_tags`, so a book
-// can land in several tag groups at once.
+// The metadata field a "folder" view groups books by. Author, rating, publisher,
+// language, series, and format are scalar columns on `books`; tags is
+// many-to-many via `book_tags`, so a book can land in several tag groups at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GroupBy {
     Author,
     Tag,
     Rating,
+    Publisher,
+    Language,
+    Series,
+    Format,
 }
 
 impl GroupBy {
@@ -20,6 +24,10 @@ impl GroupBy {
             GroupBy::Author => "author",
             GroupBy::Tag => "tag",
             GroupBy::Rating => "rating",
+            GroupBy::Publisher => "publisher",
+            GroupBy::Language => "language",
+            GroupBy::Series => "series",
+            GroupBy::Format => "format",
         }
     }
 }
@@ -55,6 +63,40 @@ pub fn list_groups(conn: &Connection, by: GroupBy) -> Result<Vec<Group>> {
              FROM books
              GROUP BY rating
              ORDER BY rating IS NULL, rating DESC",
+        ),
+        GroupBy::Publisher => list_scalar_groups(
+            conn,
+            "SELECT CASE WHEN publisher IS NULL OR TRIM(publisher) = '' THEN NULL ELSE publisher END AS grp,
+                    COUNT(*) AS n
+             FROM books
+             GROUP BY grp
+             ORDER BY grp IS NULL, LOWER(grp)",
+        ),
+        GroupBy::Language => list_scalar_groups(
+            conn,
+            "SELECT CASE WHEN language IS NULL OR TRIM(language) = '' THEN NULL ELSE language END AS grp,
+                    COUNT(*) AS n
+             FROM books
+             GROUP BY grp
+             ORDER BY grp IS NULL, LOWER(grp)",
+        ),
+        GroupBy::Series => list_scalar_groups(
+            conn,
+            "SELECT CASE WHEN series_name IS NULL OR TRIM(series_name) = '' THEN NULL ELSE series_name END AS grp,
+                    COUNT(*) AS n
+             FROM books
+             GROUP BY grp
+             ORDER BY grp IS NULL, LOWER(grp)",
+        ),
+        // Every book carries a format, so the catch-all group won't appear in
+        // practice; the null branch mirrors the others for symmetry.
+        GroupBy::Format => list_scalar_groups(
+            conn,
+            "SELECT CASE WHEN format IS NULL OR TRIM(format) = '' THEN NULL ELSE format END AS grp,
+                    COUNT(*) AS n
+             FROM books
+             GROUP BY grp
+             ORDER BY grp IS NULL, LOWER(grp)",
         ),
         GroupBy::Tag => list_tag_groups(conn),
     }
@@ -123,6 +165,14 @@ pub fn books_in_group(conn: &Connection, by: GroupBy, value: Option<&str>) -> Re
             ("b.rating = ?1", Some(Value::Integer(n)))
         }
         (GroupBy::Rating, None) => ("b.rating IS NULL", None),
+        (GroupBy::Publisher, Some(v)) => ("b.publisher = ?1", Some(Value::Text(v.to_string()))),
+        (GroupBy::Publisher, None) => ("b.publisher IS NULL OR TRIM(b.publisher) = ''", None),
+        (GroupBy::Language, Some(v)) => ("b.language = ?1", Some(Value::Text(v.to_string()))),
+        (GroupBy::Language, None) => ("b.language IS NULL OR TRIM(b.language) = ''", None),
+        (GroupBy::Series, Some(v)) => ("b.series_name = ?1", Some(Value::Text(v.to_string()))),
+        (GroupBy::Series, None) => ("b.series_name IS NULL OR TRIM(b.series_name) = ''", None),
+        (GroupBy::Format, Some(v)) => ("b.format = ?1", Some(Value::Text(v.to_string()))),
+        (GroupBy::Format, None) => ("b.format IS NULL OR TRIM(b.format) = ''", None),
         (GroupBy::Tag, Some(name)) => (
             "EXISTS (SELECT 1 FROM book_tags bt JOIN tags t ON t.id = bt.tag_id \
              WHERE bt.book_id = b.id AND t.name = ?1 COLLATE NOCASE)",
@@ -169,6 +219,26 @@ mod tests {
             "INSERT INTO books (title, author, format, file_path, rating)
              VALUES (?1, ?2, 'epub', '', ?3)",
             params![title, author, rating],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    // Insert with explicit scalar-metadata columns so publisher/language/series/
+    // format grouping can be exercised. `format` defaults to a caller-chosen value
+    // because it is never null on a real book.
+    fn insert_meta(
+        conn: &Connection,
+        title: &str,
+        publisher: Option<&str>,
+        language: Option<&str>,
+        series: Option<&str>,
+        format: &str,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO books (title, format, file_path, publisher, language, series_name)
+             VALUES (?1, ?2, '', ?3, ?4, ?5)",
+            params![title, format, publisher, language, series],
         )
         .unwrap();
         conn.last_insert_rowid()
@@ -309,10 +379,142 @@ mod tests {
     }
 
     #[test]
+    fn publisher_groups_collapse_null_and_empty() {
+        let (_d, conn) = open_fresh();
+        insert_meta(&conn, "A", Some("Penguin"), None, None, "epub");
+        insert_meta(&conn, "B", Some("Penguin"), None, None, "epub");
+        insert_meta(&conn, "C", None, None, None, "epub");
+        insert_meta(&conn, "D", Some(""), None, None, "epub");
+
+        let groups = list_groups(&conn, GroupBy::Publisher).unwrap();
+        assert_eq!(
+            groups,
+            vec![
+                Group {
+                    value: Some("Penguin".into()),
+                    count: 2
+                },
+                Group {
+                    value: None,
+                    count: 2
+                },
+            ]
+        );
+
+        assert_eq!(
+            books_in_group(&conn, GroupBy::Publisher, Some("Penguin"))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            books_in_group(&conn, GroupBy::Publisher, None)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn language_groups_sort_alpha_with_catch_all_last() {
+        let (_d, conn) = open_fresh();
+        insert_meta(&conn, "A", None, Some("pt-BR"), None, "epub");
+        insert_meta(&conn, "B", None, Some("en"), None, "epub");
+        insert_meta(&conn, "C", None, None, None, "epub");
+
+        let groups = list_groups(&conn, GroupBy::Language).unwrap();
+        assert_eq!(
+            groups,
+            vec![
+                Group {
+                    value: Some("en".into()),
+                    count: 1
+                },
+                Group {
+                    value: Some("pt-BR".into()),
+                    count: 1
+                },
+                Group {
+                    value: None,
+                    count: 1
+                },
+            ]
+        );
+        assert_eq!(
+            books_in_group(&conn, GroupBy::Language, Some("en"))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn series_groups_collapse_null_and_empty() {
+        let (_d, conn) = open_fresh();
+        insert_meta(&conn, "A", None, None, Some("Discworld"), "epub");
+        insert_meta(&conn, "B", None, None, Some("Discworld"), "epub");
+        insert_meta(&conn, "C", None, None, None, "epub");
+
+        let groups = list_groups(&conn, GroupBy::Series).unwrap();
+        assert_eq!(
+            groups,
+            vec![
+                Group {
+                    value: Some("Discworld".into()),
+                    count: 2
+                },
+                Group {
+                    value: None,
+                    count: 1
+                },
+            ]
+        );
+        assert_eq!(
+            books_in_group(&conn, GroupBy::Series, Some("Discworld"))
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn format_groups_have_no_catch_all() {
+        let (_d, conn) = open_fresh();
+        insert_meta(&conn, "A", None, None, None, "epub");
+        insert_meta(&conn, "B", None, None, None, "pdf");
+        insert_meta(&conn, "C", None, None, None, "epub");
+
+        let groups = list_groups(&conn, GroupBy::Format).unwrap();
+        assert_eq!(
+            groups,
+            vec![
+                Group {
+                    value: Some("epub".into()),
+                    count: 2
+                },
+                Group {
+                    value: Some("pdf".into()),
+                    count: 1
+                },
+            ]
+        );
+        assert_eq!(
+            books_in_group(&conn, GroupBy::Format, Some("epub"))
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
     fn empty_catalog_has_no_groups() {
         let (_d, conn) = open_fresh();
         assert!(list_groups(&conn, GroupBy::Author).unwrap().is_empty());
         assert!(list_groups(&conn, GroupBy::Tag).unwrap().is_empty());
         assert!(list_groups(&conn, GroupBy::Rating).unwrap().is_empty());
+        assert!(list_groups(&conn, GroupBy::Publisher).unwrap().is_empty());
+        assert!(list_groups(&conn, GroupBy::Language).unwrap().is_empty());
+        assert!(list_groups(&conn, GroupBy::Series).unwrap().is_empty());
+        assert!(list_groups(&conn, GroupBy::Format).unwrap().is_empty());
     }
 }

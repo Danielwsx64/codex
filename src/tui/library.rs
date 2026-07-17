@@ -77,7 +77,7 @@ const TABLE_BINDINGS: &[Binding] = &[
     },
     Binding {
         keys: "g",
-        desc: "group into folders (author/tags/rating)",
+        desc: "group into folders (author/tags/rating/publisher/language/series/format)",
     },
     Binding {
         keys: "/",
@@ -129,6 +129,10 @@ const GROUP_OPTIONS: &[(Option<GroupBy>, &str)] = &[
     (Some(GroupBy::Author), "Author"),
     (Some(GroupBy::Tag), "Tags"),
     (Some(GroupBy::Rating), "Rating"),
+    (Some(GroupBy::Publisher), "Publisher"),
+    (Some(GroupBy::Language), "Language"),
+    (Some(GroupBy::Series), "Series"),
+    (Some(GroupBy::Format), "Format"),
     (None, "Off (flat list)"),
 ];
 
@@ -138,6 +142,10 @@ fn group_field_label(by: GroupBy) -> &'static str {
         GroupBy::Author => "Author",
         GroupBy::Tag => "Tags",
         GroupBy::Rating => "Rating",
+        GroupBy::Publisher => "Publisher",
+        GroupBy::Language => "Language",
+        GroupBy::Series => "Series",
+        GroupBy::Format => "Format",
     }
 }
 
