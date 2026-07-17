@@ -1727,8 +1727,8 @@ fn read_tree(dir: &Path) -> std::result::Result<Vec<TreeEntry>, String> {
             }
         }
     }
-    dirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-    files.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    dirs.sort_by_key(|a| a.0.to_lowercase());
+    files.sort_by_key(|a| a.0.to_lowercase());
 
     let mut out: Vec<TreeEntry> = Vec::with_capacity(dirs.len() + files.len() + 1);
     if dir.parent().is_some() {
@@ -2203,7 +2203,7 @@ fn render_inspect_modal(frame: &mut Frame<'_>, area: Rect, book: &Book, absolute
             let inner_w = target_w
                 .saturating_sub((INSPECT_LEFT_PAD as u16) + 4)
                 .max(1) as usize;
-            let count = (d.chars().count().max(1) + inner_w - 1) / inner_w;
+            let count = d.chars().count().max(1).div_ceil(inner_w);
             (count as u16).clamp(2, 6) + 1
         })
         .unwrap_or(0);

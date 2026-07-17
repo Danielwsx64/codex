@@ -1,5 +1,9 @@
 /target
 
+# release build artifacts (packaged binaries)
+/dist
+/docs/book
+
 # IDEs / editors
 .vscode/
 .idea/

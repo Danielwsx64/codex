@@ -1,0 +1,16 @@
+[book]
+title = "codex"
+description = "Terminal-first ebook library and ereader manager"
+authors = ["Daniel Lima"]
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/Danielwsx64/codex"
+edit-url-template = "https://github.com/Danielwsx64/codex/edit/main/docs/{path}"
+
+[output.html.fold]
+enable = true
+level = 1

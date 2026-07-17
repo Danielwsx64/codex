@@ -13,8 +13,7 @@ When referring to commands in docs and code, use `cdx` (e.g. `cdx ls`,
 
 ## Language policy
 
-- **In PT-BR:** `ROADMAP.md`.
-- **In English:** everything else — code (modules, functions, variables, columns), comments, log lines, CLI strings (`--help`, error messages), commit messages, PR descriptions, this file. No exceptions for domain terms.
+- **In English:** everything — code (modules, functions, variables, columns), comments, log lines, CLI strings (`--help`, error messages), commit messages, PR descriptions, docs, `ROADMAP.md`, this file. No exceptions for domain terms.
 
 ## Core direction
 

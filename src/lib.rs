@@ -13,6 +13,7 @@ pub mod import;
 pub mod matching;
 pub mod reader;
 pub mod tui;
+pub mod update;
 pub mod welcome;
 
 use std::io::{IsTerminal, Write};
@@ -178,6 +179,11 @@ pub fn run() -> Result<()> {
             cli.catalog.as_deref(),
             cli.json,
         ),
+        Some(Command::Update { check, yes }) => cli::update::dispatch(check, yes, cli.json),
+        Some(Command::Completions { shell }) => {
+            cli::completions::dispatch(shell);
+            Ok(())
+        }
         None => print_welcome(),
     }
 }

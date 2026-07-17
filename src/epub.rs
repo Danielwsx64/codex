@@ -244,10 +244,7 @@ fn parse_ncx(bytes: &[u8]) -> Vec<TocEntry> {
     let mut capture_text = false;
     let mut in_navlabel = false;
 
-    loop {
-        let Ok(event) = reader.read_event_into(&mut buf) else {
-            break;
-        };
+    while let Ok(event) = reader.read_event_into(&mut buf) {
         match event {
             Event::Eof => break,
             Event::Start(ref e) | Event::Empty(ref e) => {
@@ -299,10 +296,7 @@ fn parse_nav(bytes: &[u8]) -> Vec<TocEntry> {
     let mut current_text = String::new();
     let mut in_anchor = false;
 
-    loop {
-        let Ok(event) = reader.read_event_into(&mut buf) else {
-            break;
-        };
+    while let Ok(event) = reader.read_event_into(&mut buf) {
         match event {
             Event::Eof => break,
             Event::Start(ref e) => {

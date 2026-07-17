@@ -4,11 +4,13 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 
 pub mod books;
 pub mod catalog;
+pub mod completions;
 pub mod dedup;
 pub mod device;
 pub mod edit;
 pub mod embed;
 pub mod groups;
+pub mod update;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -310,6 +312,21 @@ pub enum Command {
             help = "Field to group by: author, tag, rating, publisher, language, series, or format"
         )]
         by: GroupByArg,
+    },
+    #[command(about = "Check for and install a newer cdx release")]
+    Update {
+        #[arg(
+            long,
+            help = "Only report whether a newer version exists; install nothing"
+        )]
+        check: bool,
+        #[arg(long, help = "Install the update without asking for confirmation")]
+        yes: bool,
+    },
+    #[command(about = "Print a shell completion script for cdx")]
+    Completions {
+        #[arg(value_name = "SHELL", help = "Shell to generate completions for")]
+        shell: clap_complete::Shell,
     },
 }
 

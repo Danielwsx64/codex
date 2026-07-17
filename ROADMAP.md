@@ -1,499 +1,532 @@
 # Roadmap
 
-Formato: milestones versionados. Cada release é um escopo fechado;
-quando todos os checks estão marcados, lança-se a versão e abre-se a
-próxima.
+Format: versioned milestones. Each release is a closed scope; once every
+check is ticked, the version ships and the next one opens.
 
-## Princípio: paridade CLI ↔ TUI
+The milestones marked `[x]` (v0.1–v1.0) are delivered and make up the
+feature set of **v1.0 — Stable**. Everything still open has been moved to
+the end (**Post-1.0 — Future** and **Backlog**).
 
-Toda feature exposta ao usuário ganha **duas interfaces na mesma
-milestone**: o subcomando CLI (`cdx <verbo>`) e a tela equivalente
-dentro da TUI (`cdx tui`). Os dois caminhos consomem o mesmo módulo
-de domínio — a divergência fica restrita à camada de apresentação.
-Por isso os itens abaixo, quando listam apenas o verbo CLI, implicam
-também a tela TUI correspondente.
+## Principle: CLI ↔ TUI parity
 
-Exceção (rara, sempre justificada):
+Every user-facing feature gets **two interfaces in the same milestone**:
+the CLI subcommand (`cdx <verb>`) and the equivalent screen inside the TUI
+(`cdx tui`). Both paths consume the same domain module — the divergence is
+confined to the presentation layer. So when the items below list only the
+CLI verb, they also imply the corresponding TUI screen.
 
-- Leitor de livros (v0.9) — só faz sentido na TUI.
+Exception (rare, always justified):
 
-## TUI: navegação global
+- Book reader (v0.9) — only makes sense in the TUI.
 
-A tela de abertura da TUI (mesma da welcome reusada do módulo
-compartilhado) é o ponto de entrada e lista as **seções top-level**
-como links navegáveis (↑/↓ percorrem a lista, Enter entra).
-Cada seção corresponde a um conjunto coerente de verbos CLI:
+## TUI: global navigation
 
-1. **Library** — listar/visualizar/remover livros (`cdx ls`,
-   `cdx show`, `cdx rm`) [v0.1]
-2. **Search** — busca full-text + filtros (`cdx search`) [v0.3]
-3. **Catalogs** — registry de catálogos (`cdx catalog ls`/`use`/
-   `rm` + wizard de `init`/`add`) [v0.1]
-4. **Devices** — sync com ereaders (`cdx device ls`, `device books`,
+The TUI's opening screen (the same welcome reused from the shared module)
+is the entry point and lists the **top-level sections** as navigable links
+(↑/↓ move through the list, Enter enters). Each section maps to a coherent
+set of CLI verbs:
+
+1. **Library** — list/view/remove books (`cdx ls`, `cdx show`, `cdx rm`)
+   [v0.1]
+2. **Search** — full-text search + filters (`cdx search`) [v0.3]
+3. **Catalogs** — catalog registry (`cdx catalog ls`/`use`/`rm` + the
+   `init`/`add` wizard) [v0.1]
+4. **Devices** — sync with ereaders (`cdx device ls`, `device books`,
    `device alias`, `push`, `pull`, `sync`) [v0.4]
 
-Seções de milestones futuros aparecem na lista com sufixo
-"(v0.X)" e ficam desabilitadas (Enter sobre elas não navega) até
-serem entregues no milestone correspondente.
+Sections of future milestones appear in the list with a "(v0.X)" suffix and
+stay disabled (Enter over them does not navigate) until they ship in the
+corresponding milestone.
 
-**Atalho global — command palette via `:`**: de qualquer tela, `:`
-abre um input no rodapé (estilo vim). Comandos disponíveis:
-`:library`, `:catalogs`, `:search`, `:devices`, mais `:quit`
-(alias de `q`, convenção vim — não é rebind do exit, é uma forma
-alternativa). Tab completa pelo prefixo único mais curto (`:l`,
-`:c`, `:s`, `:d`, `:q`). Enter executa; Esc cancela e volta o
-foco pra tela ativa.
+**Global shortcut — command palette via `:`**: from any screen, `:` opens an
+input in the footer (vim-style). Available commands: `:library`,
+`:catalogs`, `:search`, `:devices`, plus `:quit` (alias of `q`, vim
+convention — not a rebind of exit, just an alternative form). Tab completes
+by the shortest unique prefix (`:l`, `:c`, `:s`, `:d`, `:q`). Enter runs;
+Esc cancels and returns focus to the active screen.
 
-Restrições:
+Constraints:
 
-- As teclas reservadas (`q`, `Ctrl+C` pra sair; `Esc`, `Enter` pra
-  navegação in-screen) seguem valendo. O palette só captura
-  texto enquanto está aberto — fora dele, `q` continua sendo o
-  exit imediato.
-- O palette **não substitui** o help contextual `?`, que continua
-  per-screen documentando atalhos da tela ativa.
+- The reserved keys (`q`, `Ctrl+C` to exit; `Esc`, `Enter` for in-screen
+  navigation) still hold. The palette only captures text while it is open —
+  outside it, `q` remains the immediate exit.
+- The palette **does not replace** the contextual help `?`, which stays
+  per-screen documenting the active screen's shortcuts.
 
-## v0.1 — MVP catálogo
+## v0.1 — Catalog MVP
 
-Catálogo local independente, sem device sync, sem Calibre. O usuário
-escolhe onde cada catálogo vive (path qualquer — pode ser um repo
-git); o cdx mantém um registro multi-catálogo em
-`$XDG_CONFIG_HOME/cdx/config.toml` com o catálogo "atual".
+Independent local catalog, no device sync, no Calibre. The user chooses
+where each catalog lives (any path — it can be a git repo); cdx keeps a
+multi-catalog registry at `$XDG_CONFIG_HOME/cdx/config.toml` with the
+"current" catalog.
 
-- [x] Definir esquema inicial do catálogo (SQLite — tabela `books`)
-- [x] `cdx catalog init <name> <path>` — cria DB + `books/` no path e
-      registra o catálogo
-- [x] `cdx catalog add <name> <path>` — registra um catálogo já
-      existente no path informado
-- [x] `cdx catalog ls` — lista catálogos registrados (marca atual e
-      `(missing)` quando o path sumiu do disco)
-- [x] `cdx catalog use <name>` — troca o catálogo atual
-- [x] `cdx catalog rm <name>` — remove do registro (flag `--purge`
-      pra apagar os arquivos)
-- [x] TUI: tela "Catalogs" — lista catálogos (atual marcado,
-      `(missing)` quando o path sumiu), permite `use` (Enter) e `rm`
-      (com confirmação + opção de purgar). A welcome é sempre a home;
-      a tela Catalogs é acessada via menu ou `:catalogs`.
-- [x] TUI: wizard "New catalog" — fluxo único que cobre `init` (cria
-      DB + `books/`) e `add` (registra path existente), com nome,
-      path e descrição opcional
-- [x] TUI: estender welcome com menu das 4 seções top-level
-      (Library e Catalogs ativas; Search "(v0.3)" e Devices "(v0.4)"
-      desabilitadas até seus milestones)
-- [x] TUI: command palette `:` — overlay no rodapé com input +
-      tab-complete; registra `:library` (stub se a tela Library
-      ainda não estiver pronta), `:catalogs`, `:quit`/`:q`; demais
-      seções registram-se em seus milestones
-- [x] `cdx add <file>...` — importa EPUB/PDF/MOBI/AZW3, extrai metadados
-      básicos e renomeia o arquivo armazenado como `Author_-_Title.ext`
-      sanitizado; formatos fora da lista são recusados com mensagem clara
-- [x] `cdx ls` — lista livros (id, título, autor, formato)
-- [x] `cdx inspect <id|título>` — exibe metadados detalhados; aceita id
-      numérico ou título exato (case-insensitive); título ambíguo retorna
-      erro listando os ids candidatos
-    - [ ] autocomplete dinâmico de nome/id no shell — adiado pra v1.0
-          (`clap_complete` feature `unstable-dynamic`)
-- [x] `cdx rm <id|título>` — remove do catálogo e apaga o arquivo; flag
-      `--keep` move o arquivo pra cwd em vez de apagar (sufixa `.1`, `.2`
-      em colisão)
-- [x] Logging configurável via `RUST_LOG` (`tracing-subscriber` lê
-      `RUST_LOG`; `-v/-vv/-vvv` ajusta o default sem precisar exportar)
-- [x] Tela de boas vindas em módulo compartilhado, exibida quando `cdx`
-      roda sem subcomando (mesmo conteúdo será reusado pela TUI)
-- [x] `cdx tui` — esqueleto ratatui + tela de boas vindas reusando o
-      módulo compartilhado (prova o ciclo CLI↔TUI; demais telas entram
-      junto com seus respectivos comandos nos milestones seguintes)
+- [x] Define the initial catalog schema (SQLite — `books` table)
+- [x] `cdx catalog init <name> <path>` — create DB + `books/` at the path
+      and register the catalog
+- [x] `cdx catalog add <name> <path>` — register an existing catalog at the
+      given path
+- [x] `cdx catalog ls` — list registered catalogs (mark the current one and
+      `(missing)` when the path disappeared from disk)
+- [x] `cdx catalog use <name>` — switch the current catalog
+- [x] `cdx catalog rm <name>` — remove from the registry (`--purge` flag to
+      delete the files)
+- [x] TUI: "Catalogs" screen — list catalogs (current one marked,
+      `(missing)` when the path disappeared), allow `use` (Enter) and `rm`
+      (with confirmation + option to purge). The welcome is always the home;
+      the Catalogs screen is reached via the menu or `:catalogs`.
+- [x] TUI: "New catalog" wizard — a single flow covering `init` (creates
+      DB + `books/`) and `add` (registers an existing path), with name,
+      path, and optional description
+- [x] TUI: extend the welcome with a menu of the 4 top-level sections
+      (Library and Catalogs active; Search "(v0.3)" and Devices "(v0.4)"
+      disabled until their milestones)
+- [x] TUI: command palette `:` — footer overlay with input + tab-complete;
+      registers `:library` (stub if the Library screen is not ready yet),
+      `:catalogs`, `:quit`/`:q`; the other sections register in their
+      milestones
+- [x] `cdx add <file>...` — import EPUB/PDF/MOBI/AZW3, extract basic
+      metadata, and rename the stored file to a sanitized
+      `Author_-_Title.ext`; formats outside the list are refused with a
+      clear message
+- [x] `cdx ls` — list books (id, title, author, format)
+- [x] `cdx inspect <id|title>` — show detailed metadata; accepts a numeric
+      id or an exact (case-insensitive) title; an ambiguous title returns an
+      error listing the candidate ids
+    - [ ] dynamic name/id autocomplete in the shell — deferred (see
+          "Deferred extras" under Post-1.0; `clap_complete` `unstable-dynamic`)
+- [x] `cdx rm <id|title>` — remove from the catalog and delete the file;
+      `--keep` moves the file to the cwd instead of deleting (suffixes `.1`,
+      `.2` on collision)
+- [x] Logging configurable via `RUST_LOG` (`tracing-subscriber` reads
+      `RUST_LOG`; `-v/-vv/-vvv` adjusts the default without needing to
+      export it)
+- [x] Welcome screen in a shared module, shown when `cdx` runs with no
+      subcommand (same content is reused by the TUI)
+- [x] `cdx tui` — ratatui skeleton + welcome screen reusing the shared
+      module (proves the CLI↔TUI cycle; the other screens land alongside
+      their respective commands in the following milestones)
 
-## v0.2 — Edição de metadados
+## v0.2 — Metadata editing
 
-Ciclo de embed: qualquer edit (`cdx edit` ou TUI `e`) marca o livro como
-`embed_status = 'pending'`; o sync (`cdx embed sync`, TUI `w` ou
-`Ctrl+W`) embeda no arquivo e marca `synced` (EPUB/PDF) ou
-`unsupported` (MOBI/AZW3, não-retentável).
+Embed cycle: any edit (`cdx edit` or TUI `e`) marks the book as
+`embed_status = 'pending'`; the sync (`cdx embed sync`, TUI `w` or
+`Ctrl+W`) embeds it into the file and marks `synced` (EPUB/PDF) or
+`unsupported` (MOBI/AZW3, not retryable).
 
-- [x] `cdx edit <id>` — abre `$EDITOR` com TOML dos metadados; valida
-      no parse e reaproveita `handle_update` (que reseta `embed_status`
-      para `pending`); tempfile preservado em caso de erro
-- [x] `cdx tag <id> <tag>...` / `cdx untag <id> <tag>... [--all]` — campo
-      "Tags" no modal de edit da TUI (multi, comma-separated); coluna "tags"
-      em `cdx ls` humano e JSON; embed_status volta a `pending` só quando o
-      conjunto muda; `--all` em `untag` zera todas as tags
-- [x] `cdx rate <id> <0-5>` — TUI: campo "Rating" no modal (validado 0–5);
-      CLI aceita 0–5 e trata `0` como "limpar"
-- [x] `cdx series <id> <name> [--index N]` — TUI: campos "Series" +
-      "Index" no modal; CLI tem `--clear` pra remover (sem `<name>`)
-- [x] `cdx embed sync` — embeda metadados em todos os livros `pending`;
-      imprime progresso linha-a-linha + summary final
-- [x] TUI: embed de metadados em arquivo (EPUB/PDF) via tecla `w` no
-      Inspect — MOBI/AZW3 retorna status "embed not supported"
-- [x] Migration `0002_metadata.sql` — colunas `description`,
-      `series_name`, `series_index`, `rating`, `isbn`, `publisher`,
-      `language`, `published_date` em `books`; tabela `tags` + `book_tags`
-- [x] Migration `0004_embed_state.sql` — colunas `embed_status` +
-      `embed_synced_at` em `books`
-- [x] Migration `0005_content_hash.sql` + dedup no `cdx add` — fingerprint
-      SHA-256 por livro (tabela `book_hashes`); EPUB ganha hash de conteúdo
-      estável (ignora o OPF reescrito pelo embed), demais formatos hash do
-      arquivo + hash pós-embed acumulado; duplicata é pulada com aviso, `--force`
-      reimporta; backfill best-effort dos livros existentes
-- [x] Extração no `cdx add` estendida (EPUB/MOBI/PDF) para popular os
-      novos campos quando disponíveis no arquivo
+- [x] `cdx edit <id>` — open `$EDITOR` with the metadata as TOML; validate
+      on parse and reuse `handle_update` (which resets `embed_status` to
+      `pending`); the tempfile is preserved on error
+- [x] `cdx tag <id> <tag>...` / `cdx untag <id> <tag>... [--all]` — a
+      "Tags" field in the TUI edit modal (multi, comma-separated); a "tags"
+      column in `cdx ls` human and JSON; `embed_status` returns to
+      `pending` only when the set changes; `--all` on `untag` clears all
+      tags
+- [x] `cdx rate <id> <0-5>` — TUI: a "Rating" field in the modal (validated
+      0–5); the CLI accepts 0–5 and treats `0` as "clear"
+- [x] `cdx series <id> <name> [--index N]` — TUI: "Series" + "Index" fields
+      in the modal; the CLI has `--clear` to remove it (without `<name>`)
+- [x] `cdx embed sync` — embed metadata into every `pending` book; print
+      line-by-line progress + a final summary
+- [x] TUI: embed metadata into the file (EPUB/PDF) via the `w` key on
+      Inspect — MOBI/AZW3 returns status "embed not supported"
+- [x] Migration `0002_metadata.sql` — `description`, `series_name`,
+      `series_index`, `rating`, `isbn`, `publisher`, `language`,
+      `published_date` columns on `books`; `tags` + `book_tags` tables
+- [x] Migration `0004_embed_state.sql` — `embed_status` +
+      `embed_synced_at` columns on `books`
+- [x] Migration `0005_content_hash.sql` + dedup in `cdx add` — a SHA-256
+      fingerprint per book (`book_hashes` table); EPUB gets a stable content
+      hash (ignoring the OPF rewritten by embedding), other formats use the
+      file hash + an accumulated post-embed hash; a duplicate is skipped
+      with a warning, `--force` re-imports; best-effort backfill of existing
+      books
+- [x] Extended extraction in `cdx add` (EPUB/MOBI/PDF) to populate the new
+      fields when available in the file
 
-## v0.3 — Busca e filtros
+## v0.3 — Search and filters
 
-- [x] `cdx search <query>` — substring case-insensitive em título/autor/tags
-      (whitespace = AND tokens; reusa o renderer do `ls` pra humano e JSONL)
-- [x] Flags `--author`, `--tag`, `--series`, `--rating`
-- [x] Saída `--json` pra compor com `jq`/scripts
-- [x] TUI: registrar `:search` no command palette + ativar link
-      "Search" na welcome — vira o "modo filtrado" da tela Library:
-      `/` filtra por texto (tokens AND, como no CLI) e `:search` abre o
-      wizard com campos de texto/autor/tag/série/rating; Esc limpa o filtro
+- [x] `cdx search <query>` — case-insensitive substring on
+      title/author/tags (whitespace = AND tokens; reuses the `ls` renderer
+      for human and JSONL)
+- [x] `--author`, `--tag`, `--series`, `--rating` flags
+- [x] `--json` output to compose with `jq`/scripts
+- [x] TUI: register `:search` in the command palette + activate the
+      "Search" link on the welcome — becomes the "filtered mode" of the
+      Library screen: `/` filters by text (AND tokens, as in the CLI) and
+      `:search` opens the wizard with text/author/tag/series/rating fields;
+      Esc clears the filter
 
 ## v0.4 — Kindle sync (USB)
 
-Sync com ereaders montados via USB, com suporte a múltiplos devices
-simultâneos. Cada device é identificado pelo serial estável (lido do
-descritor USB via sysfs) e pode ganhar um **apelido** — é o apelido
-que os comandos usam no dia a dia.
+Sync with ereaders mounted over USB, supporting multiple simultaneous
+devices. Each device is identified by its stable serial (read from the USB
+descriptor via sysfs) and can get an **alias** — the alias is what the
+commands use day-to-day.
 
-A identidade de um livro entre catálogo e device tem duas camadas:
+A book's identity between catalog and device has two layers:
 
-1. **Exata** — a tabela de sync state (`device_books`) registra cada
-   livro que o cdx enviou/trouxe (book_id ↔ path no device + checksum
-   SHA-256 + tamanho/mtime). Pra esses, não há adivinhação.
-2. **Por metadado** — pra arquivos que chegaram no device por fora,
-   o match é **título + autor normalizados** (casefold, NFKD sem
-   diacríticos, pontuação e whitespace colapsados), nunca o arquivo:
-   o formato pode variar entre as pontas (EPUB local vs AZW3 no
-   device) e hash não sobrevive a conversão. Variações pequenas
-   ("Café" vs "Cafe") casam; sem fuzzy matching — ambiguidade real
-   (dois candidatos pro mesmo match) nunca se resolve sozinha, vira
-   conflito pra decisão manual.
+1. **Exact** — the sync-state table (`device_books`) records every book cdx
+   sent/pulled (book_id ↔ path on the device + SHA-256 checksum +
+   size/mtime). For these, there is no guessing.
+2. **By metadata** — for files that arrived on the device by other means,
+   the match is **normalized title + author** (casefold, NFKD without
+   diacritics, punctuation and whitespace collapsed), never the file: the
+   format may vary between ends (local EPUB vs AZW3 on the device) and a
+   hash does not survive conversion. Small variations ("Café" vs "Cafe")
+   match; no fuzzy matching — a genuine ambiguity (two candidates for the
+   same match) never resolves itself, it becomes a conflict for manual
+   decision.
 
-- [x] Detectar Kindles montados via USB mass storage (Linux), com
-      suporte a múltiplos devices simultâneos; a identidade estável de
-      cada device é o **serial** lido do descritor USB em sysfs
-      (`idVendor` 1949 = Amazon/Lab126 é o gate; `documents/` +
-      `system/` no mount são só sanity check). Em outros SOs a
-      detecção compila e retorna lista vazia
-- [x] Migration `0007_devices.sql` — tabela `devices` (`serial` PK,
-      `alias`, `last_seen_at`) + tabela `device_books` (sync state:
-      `device_serial`, `book_id`, `device_path`, `hash`, `size`,
-      `mtime`, `synced_at`); devices vivem no catalog.db, então o
-      apelido é por catálogo
-- [x] `cdx device ls` — lista os devices detectados e os conhecidos
-      (alias, serial, mount path quando conectado, espaço livre,
-      contagem de livros); humano + JSONL
-- [x] `cdx device alias <serial|alias> <new-alias>` — define/renomeia
-      o apelido; na primeira detecção de um device sem apelido o
-      serial é usado como fallback nas listagens
-- [x] `cdx device books [--device <alias>]` — lista livros do device
-      lendo metadados dos arquivos (não só filename), com a coluna de
-      presença ("both" / "device only") via sync state + match
-      normalizado; humano + JSONL
-- [x] Seleção de device: flag `--device <alias>` em `device books`,
-      `push`, `pull` e `sync`. Um device conectado → default
-      implícito; dois ou mais sem o flag → erro claro listando os
-      candidatos (nunca escolher sozinho)
-- [x] `cdx push <id|título> [--device <alias>]` — copia arquivo do
-      catálogo pro device e grava o sync state (hash/size/mtime); sem
-      `<id|título>` abre um seletor interativo (setas/`j``k` + Enter)
-      listando os livros do catálogo
-- [x] `cdx pull <path> [--device <alias>]` — importa livro do device
-      reusando o pipeline do `cdx add` (incluindo dedup por hash) e
-      grava o sync state; sem `<path>` abre um seletor interativo
-      (setas/`j``k` + Enter) listando os livros do device
-- [x] Verificação de sync: o diff confere cada entrada do sync state
-      pelo fast-path tamanho + mtime; divergência marca o livro como
-      `modified` (re-push é oferecido no plano). `--verify` força
-      SHA-256 completo (USB é lento — full hash só sob demanda).
-      Entrada cujo arquivo sumiu do device vira `missing`
-- [x] `cdx sync [--device <alias>]` — diff bidirecional **iterativo**:
-      computa o plano (faltantes em cada ponta, `modified`, `missing`,
-      conflitos de match) e confirma item a item, estilo `git add -p`
-      (`y` aplica / `n` pula / `a` aceita o resto / `q` aborta).
-      `--dry-run` só imprime o plano; `--yes` aceita tudo (pra
-      script). Sync **nunca apaga** em nenhuma ponta — só copia;
-      remoção é sempre manual
-- [x] `cdx device clean [--device <alias>]` — remove livros do device.
-      Sem alvo abre um seletor interativo (setas/`j``k`, multi-seleção,
-      Enter confirma) listando os livros do device; `--all` limpa tudo.
-      Apaga o arquivo no device e remove a entrada correspondente de
-      `device_books` (sync state). **Nunca toca no catálogo local** — a
-      remoção é só na ponta do device, materializando o "remoção é
-      sempre manual" deste milestone. Sempre confirma antes de apagar;
-      `--yes` pula a confirmação (script). `--json` resume o que foi
-      removido (path + bytes liberados)
-- [x] TUI: ação de limpeza na visão do device — Space marca livros,
-      confirma e apaga (espelha `cdx device clean`); a navegação já
-      resolve a escolha de device sem flag
-- [x] TUI: tela "Devices" — lista devices (alias, conectado ou não);
-      `r` renomeia o apelido; Enter abre a visão de livros do device
-      selecionado (a navegação resolve a escolha de device sem flag)
-- [x] Device atual: ponteiro por catálogo (chave em `settings`) que vira o
-      alvo `--device` implícito. Vira atual quando só há um device conectado
-      e quando um device é escolhido explicitamente (`--device` no CLI ou
-      seleção na TUI), então o "último usado" persiste entre execuções mesmo
-      com vários conectados. `cdx device ls` (humano + JSONL) e a lista de
-      devices da TUI marcam o atual; `resolve_target` usa o atual antes de
-      cair no caso ambíguo
-- [x] TUI: indicadores de presença na visão do device e na Library
-      (quando há device conectado): cada linha marca "both" /
-      "local only" / "device only" / "modified" via sync state +
-      match normalizado, exibindo o formato de cada ponta quando
-      difere
-- [x] TUI: fluxo de sync espelhando o CLI iterativo — o plano vira
-      lista com checkbox por item (Space marca/desmarca, `a` tudo),
-      conflitos destacados exigem escolha explícita, Enter aplica só
-      o que está marcado, progresso linha a linha
-- [x] TUI: registrar `:devices` no command palette + ativar link
-      "Devices" na welcome
-- [x] TUI: push da Library — `p` na tabela (e item "Push to device" no
-      menu de ações) copia o livro selecionado pro device atual após
-      confirmação, reusando `cdx push`; a navegação resolve a escolha de
-      device sem flag e o cabeçalho mostra o device atual conectado
-      (alias + ●)
+- [x] Detect Kindles mounted via USB mass storage (Linux), supporting
+      multiple simultaneous devices; the stable identity of each device is
+      the **serial** read from the USB descriptor in sysfs (`idVendor` 1949
+      = Amazon/Lab126 is the gate; `documents/` + `system/` on the mount are
+      just a sanity check). On other OSes detection compiles and returns an
+      empty list
+- [x] Migration `0007_devices.sql` — `devices` table (`serial` PK, `alias`,
+      `last_seen_at`) + `device_books` table (sync state: `device_serial`,
+      `book_id`, `device_path`, `hash`, `size`, `mtime`, `synced_at`);
+      devices live in catalog.db, so the alias is per catalog
+- [x] `cdx device ls` — list detected and known devices (alias, serial,
+      mount path when connected, free space, book count); human + JSONL
+- [x] `cdx device alias <serial|alias> <new-alias>` — set/rename the alias;
+      on the first detection of a device without an alias, the serial is
+      used as a fallback in listings
+- [x] `cdx device books [--device <alias>]` — list a device's books by
+      reading file metadata (not just the filename), with the presence
+      column ("both" / "device only") via sync state + normalized match;
+      human + JSONL
+- [x] Device selection: `--device <alias>` flag on `device books`, `push`,
+      `pull`, and `sync`. One connected device → implicit default; two or
+      more without the flag → a clear error listing the candidates (never
+      choosing on its own)
+- [x] `cdx push <id|title> [--device <alias>]` — copy a file from the
+      catalog to the device and record the sync state (hash/size/mtime);
+      without `<id|title>` it opens an interactive picker (arrows/`j``k` +
+      Enter) listing the catalog's books
+- [x] `cdx pull <path> [--device <alias>]` — import a book from the device
+      reusing the `cdx add` pipeline (including hash dedup) and record the
+      sync state; without `<path>` it opens an interactive picker
+      (arrows/`j``k` + Enter) listing the device's books
+- [x] Sync verification: the diff checks each sync-state entry via the
+      size + mtime fast path; a divergence marks the book as `modified`
+      (a re-push is offered in the plan). `--verify` forces a full SHA-256
+      (USB is slow — full hash only on demand). An entry whose file vanished
+      from the device becomes `missing`
+- [x] `cdx sync [--device <alias>]` — **iterative** bidirectional diff:
+      compute the plan (missing on each end, `modified`, `missing`, match
+      conflicts) and confirm item by item, `git add -p` style (`y` apply /
+      `n` skip / `a` accept the rest / `q` abort). `--dry-run` only prints
+      the plan; `--yes` accepts everything (for scripts). Sync **never
+      deletes** on either end — it only copies; removal is always manual
+- [x] `cdx device clean [--device <alias>]` — remove books from the device.
+      Without a target it opens an interactive picker (arrows/`j``k`,
+      multi-select, Enter confirms) listing the device's books; `--all`
+      clears everything. Deletes the file on the device and removes the
+      corresponding `device_books` entry (sync state). **Never touches the
+      local catalog** — the removal is only on the device end, materializing
+      this milestone's "removal is always manual". Always confirms before
+      deleting; `--yes` skips the confirmation (scripts). `--json`
+      summarizes what was removed (path + bytes freed)
+- [x] TUI: clean action in the device view — Space marks books, confirms and
+      deletes (mirrors `cdx device clean`); navigation already resolves the
+      device choice without a flag
+- [x] TUI: "Devices" screen — list devices (alias, connected or not); `r`
+      renames the alias; Enter opens the book view of the selected device
+      (navigation resolves the device choice without a flag)
+- [x] Current device: a per-catalog pointer (key in `settings`) that becomes
+      the implicit `--device` target. It becomes current when there is only
+      one connected device and when a device is chosen explicitly (`--device`
+      on the CLI or a selection in the TUI), so the "last used" persists
+      across runs even with several connected. `cdx device ls` (human +
+      JSONL) and the TUI device list mark the current one; `resolve_target`
+      uses the current one before falling into the ambiguous case
+- [x] TUI: presence indicators in the device view and the Library (when a
+      device is connected): each row marks "both" / "local only" / "device
+      only" / "modified" via sync state + normalized match, showing each
+      end's format when they differ
+- [x] TUI: sync flow mirroring the iterative CLI — the plan becomes a list
+      with a checkbox per item (Space toggles, `a` all), highlighted
+      conflicts require an explicit choice, Enter applies only what is
+      checked, line-by-line progress
+- [x] TUI: register `:devices` in the command palette + activate the
+      "Devices" link on the welcome
+- [x] TUI: push from the Library — `p` on the table (and a "Push to device"
+      item in the actions menu) copies the selected book to the current
+      device after confirmation, reusing `cdx push`; navigation resolves the
+      device choice without a flag and the header shows the current connected
+      device (alias + ●)
 
-## v0.5 — Curadoria: duplicatas
+## v0.5 — Curation: duplicates
 
-Detecção de livros duplicados no catálogo atual e sugestão de qual
-cópia remover. Os sinais de duplicata são combinados por **união**: se
-*qualquer* método aponta suspeita, o grupo entra como candidato.
+Detect duplicate books in the current catalog and suggest which copy to
+remove. Duplicate signals are combined by **union**: if *any* method flags
+a suspicion, the group becomes a candidate.
 
-1. **Hash de conteúdo** — `book_hashes` (SHA-256 `full`/`content`):
-   pega cópias byte-idênticas e o mesmo EPUB antes/depois do embed.
-2. **Título + autor normalizado** — casefold + NFKD, pontuação/whitespace
-   colapsados (mesma normalização do match de device): pega o mesmo
-   livro em formatos/edições diferentes (EPUB vs PDF), onde o hash não
-   casa.
+1. **Content hash** — `book_hashes` (SHA-256 `full`/`content`): catches
+   byte-identical copies and the same EPUB before/after embedding.
+2. **Normalized title + author** — casefold + NFKD, punctuation/whitespace
+   collapsed (the same normalization as the device match): catches the same
+   book in different formats/editions (EPUB vs PDF), where the hash does not
+   match.
 
-Para cada grupo, o cdx **sugere apagar** a cópia "pior": menos metadados
-preenchidos (score por presença de author/description/isbn/publisher/
-language/published_date/series/tags/rating) e, no desempate, a mais
-"desatualizada" (mais antiga por `added_at` / embed_status mais fraco).
-A decisão final é sempre do usuário — o cdx só sugere.
+For each group, cdx **suggests deleting** the "worst" copy: fewest
+metadata fields filled in (a score over the presence of
+author/description/isbn/publisher/language/published_date/series/tags/
+rating) and, as a tiebreaker, the most "stale" one (oldest by `added_at` /
+weakest embed_status). The final decision is always the user's — cdx only
+suggests.
 
-- [x] `cdx dedup` — lista os grupos de duplicatas detectadas (qualquer
-      método), marcando em cada grupo a cópia sugerida pra remoção e o
-      motivo ("hash idêntico" / "menos metadados" / "mais antiga");
-      humano + `--json` (JSONL, um objeto por grupo)
-- [x] Flag `--by hash|meta|all` (default `all` = união dos sinais) pra
-      restringir o método de detecção
-- [x] Score de completude de metadados — função pura sobre `Book` que
-      pontua a presença dos campos; elege a cópia sugerida e aparece no
-      `--json`. Backfill de fingerprints garante que o método de hash
-      funcione nos livros antigos
-- [x] Remoção assistida — seletor (setas/`j``k` + Enter, ou aceita a
-      sugestão) que reusa o caminho do `cdx rm` (apaga do catálogo +
-      arquivo; `--keep` move pra cwd); `--yes` aceita todas as sugestões
-      (script). Nunca apaga sem confirmação
-- [x] TUI: tela/ação "Duplicates" na seção Library — lista os grupos,
-      destaca a sugestão e apaga com confirmação (espelha `cdx dedup`)
+- [x] `cdx dedup` — list the detected duplicate groups (any method),
+      marking in each group the copy suggested for removal and the reason
+      ("identical hash" / "less metadata" / "older"); human + `--json`
+      (JSONL, one object per group)
+- [x] `--by hash|meta|all` flag (default `all` = union of the signals) to
+      restrict the detection method
+- [x] Metadata completeness score — a pure function over `Book` that scores
+      the presence of the fields; elects the suggested copy and appears in
+      `--json`. A fingerprint backfill ensures the hash method works on old
+      books
+- [x] Assisted removal — a picker (arrows/`j``k` + Enter, or accept the
+      suggestion) that reuses the `cdx rm` path (deletes from the catalog +
+      file; `--keep` moves to the cwd); `--yes` accepts all suggestions
+      (scripts). Never deletes without confirmation
+- [x] TUI: "Duplicates" screen/action in the Library section — list the
+      groups, highlight the suggestion and delete with confirmation (mirrors
+      `cdx dedup`)
 
-## v0.6 — Conversão de formatos
+## v0.9 — TUI reader (EPUB + TXT/Markdown)
 
-- [ ] `cdx convert <id> --to epub|mobi|azw3` (delegando pra
-      `ebook-convert` do Calibre se disponível)
-- [ ] Detectar ausência da dependência externa com mensagem clara
+Reading books directly in the terminal — the only TUI-only feature of the
+roadmap (cf. the exception declared in the parity principle). The other TUI
+screens are distributed across the earlier milestones, alongside their CLI
+commands. No equivalent CLI command: the reader is TUI-only by design.
 
-## v0.7 — Outros ereaders
+- [x] EPUB rendering — spine extraction via the `src/epub` module (extends
+      what already existed in `src/import/epub.rs`) + HTML→text via
+      `html2text`. Reflow recomputed on resize.
+- [x] TXT/Markdown rendering — `cdx add` accepts `.txt` and `.md`; Markdown
+      via `pulldown-cmark`; TXT by direct reading.
+- [x] Pagination by viewport height — `:N` jumps to the book's absolute
+      page; `:cN` jumps to chapter N. The footer shows `ch X/Y · pg A/B`.
+- [x] Vim-style visual cursor (`h j k l w b e 0 $ gg G`), pagination
+      (`Space`, `Ctrl+f`, `Ctrl+b`, `Ctrl+d`, `Ctrl+u`), chapter switching
+      (`]`, `[`). `Esc` returns to the Library.
+- [x] Persist reading progress — migration `0006_reading_progress` stores
+      `last_chapter`, `last_offset`, `last_read_at` on `books`. Saved when
+      switching chapters, paging, and on leaving the reader.
+- [x] Chapter navigation — `[`/`]` between chapters; `:cN` jumps directly.
+      The EPUB TOC (NCX or nav.xhtml) is used to name chapters when
+      available.
+- [x] `?` opens contextual help with the active screen's keyboard
+      shortcuts.
 
-- [ ] Suporte a Kobo (estrutura de pastas, DB local)
-- [ ] Abstração de "device driver" pra facilitar PocketBook/Boox no
-      futuro
+Out of scope for this delivery (deferred):
 
-## v0.8 — Import / interop
+- Visual selection (`v`), search (`/`, `n`, `N`), bookmarks.
+- A navigable TOC modal (the current list stays embedded in the
+  footer/help).
+- Inline images (Kitty/Sixel) — depends on terminal detection.
+- Showing `last_read_at` in `cdx ls` / `cdx inspect`.
 
-- [ ] `cdx import calibre <path>` — importa de uma library Calibre
-      existente (lê `metadata.db`)
-- [ ] Export de catálogo cdx em formato neutro (JSON/CSV)
+## v0.9.1 — Reader: Kindle (MOBI/AZW3)
 
-## v0.9 — TUI leitor (EPUB + TXT/Markdown)
+Extends the reader to the Kindle ecosystem. `cdx add` already accepts
+MOBI/AZW3; only the read path in the reader is missing.
 
-Leitura de livros direto no terminal — única feature TUI-only do
-roadmap (cf. exceção declarada no princípio de paridade). As demais
-telas da TUI ficam distribuídas pelos milestones anteriores, junto
-com seus comandos CLI. Sem comando CLI equivalente: o leitor é
-TUI-only por design.
+- [x] Reader for MOBI via the `mobi` crate (`content_as_string()`, with a
+      lossy fallback for CP1252 books); reuses the `html2text` → `layout`
+      pipeline from v0.9.
+- [x] Reader for AZW3 (KF8) — the container carries two streams (legacy
+      MOBI KF7 + KF8). The `mobi` crate **does not** parse KF8: dual-stream
+      AZW3 is read via the legacy stream; KF8-only (the typical Calibre
+      output) fails with a clear message suggesting conversion to EPUB.
+- [x] Detect DRM (Amazon Topaz / KFX / protected AZW) with a clear message
+      — **cdx does not remove DRM**. Only sideloaded, DRM-free books work.
+- [x] Chapters for MOBI/AZW3 — the crate does not expose the index (INDX),
+      so the split is on the MOBI6 `<mbp:pagebreak/>` markers
+      (deterministic, titles "Chapter N"); without markers the book becomes
+      a single chapter.
 
-- [x] Renderização de EPUB — extração do spine via módulo `src/epub`
-      (estende o que já existia em `src/import/epub.rs`) + HTML→texto
-      via `html2text`. Reflow recomputado on resize.
-- [x] Renderização de TXT/Markdown — `cdx add` aceita `.txt` e `.md`;
-      Markdown via `pulldown-cmark`; TXT por leitura direta.
-- [x] Paginação por altura do viewport — `:N` salta pela página
-      absoluta do livro; `:cN` salta para o capítulo N. Footer mostra
-      `cap X/Y · pág A/B`.
-- [x] Cursor visual estilo vim (`h j k l w b e 0 $ gg G`),
-      paginação (`Space`, `Ctrl+f`, `Ctrl+b`, `Ctrl+d`, `Ctrl+u`),
-      troca de capítulo (`]`, `[`). `Esc` volta para a Library.
-- [x] Persistir progresso de leitura — migration `0006_reading_progress`
-      grava `last_chapter`, `last_offset`, `last_read_at` em `books`.
-      Salva ao trocar de capítulo, paginar e ao sair do leitor.
-- [x] Navegação por capítulos — `[`/`]` entre capítulos; `:cN` salta
-      direto. TOC do EPUB (NCX ou nav.xhtml) usada para nomear os
-      capítulos quando disponível.
-- [x] `?` abre help contextual com atalhos de teclado da tela ativa.
+Validated sub-formats (limitations of the `mobi` 0.8 crate):
 
-Fora do escopo desta entrega (defer):
+- MOBI6 PalmDOC/uncompressed → reads normally.
+- HUFF/CDIC → refused with a clear message (the crate's decoder is not
+  reliable; we prefer to refuse rather than render a blank book).
+- AZW3 KF8-only → refused with a clear message ("convert it to EPUB").
+- Topaz / KFX → detected by magic bytes before the parse, refused.
+- Malformed/truncated file → the crate's parser may panic; the reader
+  catches it via `catch_unwind` and returns a normal error instead of
+  taking down the TUI session.
 
-- Seleção visual (`v`), busca (`/`, `n`, `N`), bookmarks.
-- TOC modal navegável (lista atual fica embutida na footer/help).
-- Imagens inline (Kitty/Sixel) — depende de detecção de terminal.
-- Exibir `last_read_at` em `cdx ls` / `cdx inspect`.
+## v0.9.2 — Reader: PDF
 
-## v0.9.1 — Leitor: Kindle (MOBI/AZW3)
+PDF is fixed-layout, fundamentally hostile to terminal reflow.
 
-Estende o leitor para o ecossistema Kindle. `cdx add` já aceita
-MOBI/AZW3; falta só o caminho de leitura no reader.
+- [x] Reader for single-column PDF via `pdf-extract` (sequential text
+      reused by `layout::lay_out`). Acceptable for most fiction books
+      exported as PDF. Each PDF page becomes a chapter ("Page N"), so `:cN`
+      jumps by the document's real page. An encrypted PDF is refused with a
+      clear message.
+- [x] Heuristic to detect multi-column (vertical gaps in separate columns)
+      — in multi-column text `pdf-extract` mixes lines between columns.
+      Flag it as "best-effort: layout not preserved" and proceed anyway, or
+      ask for conversion to EPUB. The "proceed anyway" branch is
+      implemented: an italic warning line at the top of each affected page.
+- [x] Tables, math formulas, vector images — degrade. Document as a
+      limitation. Documented in the reader itself: the best-effort warning
+      and the error messages (encrypted, no extractable text) carry the
+      limitation to the user.
+- [x] **Do not use `pdfium-render`**: it requires a C++ Pdfium runtime,
+      which breaks cdx's "single binary" portability. `lopdf` (already a
+      dep) is only for metadata; for text, `pdf-extract` is the way.
 
-- [x] Reader para MOBI via crate `mobi` (`content_as_string()`, com
-      fallback lossy pra livros CP1252); reaproveita o pipeline
-      `html2text` → `layout` da v0.9.
-- [x] Reader para AZW3 (KF8) — o container traz dois streams (MOBI
-      legado KF7 + KF8). O crate `mobi` **não** parseia KF8: AZW3
-      dual-stream é lido pelo stream legado; KF8-only (saída típica do
-      Calibre) falha com mensagem clara sugerindo conversão pra EPUB.
-- [x] Detectar DRM (Amazon Topaz / KFX / AZW protegido) com mensagem
-      clara — **o cdx não remove DRM**. Só funcionam livros sideloaded
-      sem DRM.
-- [x] Capítulos para MOBI/AZW3 — o crate não expõe o índice (INDX),
-      então o split é nos marcadores `<mbp:pagebreak/>` do MOBI6
-      (determinístico, títulos "Chapter N"); sem marcadores o livro
-      vira um único capítulo.
+## v0.9.3 — Reader: conversion cache and async open
 
-Sub-formatos validados (limitações do crate `mobi` 0.8):
+Conversion (PDF mostly) is expensive; reopening a book should not pay that
+cost again, nor freeze the TUI the first time.
 
-- MOBI6 PalmDOC/sem compressão → lê normalmente.
-- HUFF/CDIC → recusado com mensagem clara (decoder do crate não é
-  confiável; preferimos recusar a renderizar livro em branco).
-- AZW3 KF8-only → recusado com mensagem clara ("convert it to EPUB").
-- Topaz / KFX → detectados por magic bytes antes do parse, recusados.
-- Arquivo malformado/truncado → o parser do crate pode panicar; o
-  reader captura via `catch_unwind` e devolve erro normal em vez de
-  derrubar a sessão da TUI.
+- [x] On-disk cache of the conversion result (PDF/EPUB/MOBI/AZW3) in the
+      XDG cache dir (`~/.cache/cdx/<catalog-hash>/<id>.json`); invalidated by
+      the source file's mtime + size + schema version. A cache failure never
+      breaks the open — silent fallback to conversion. TXT/MD are left out
+      (parsing is as fast as reading the cache).
+- [x] Conversion runs on a background thread with an animated loading
+      screen ("Opening <title>…"); the TUI stays responsive and `Esc`
+      cancels the open, returning to the library.
 
-## v0.9.2 — Leitor: PDF
+## v0.11 — Group navigation (browse)
 
-PDF é layout-fixo, fundamentalmente hostil ao reflow do terminal.
+Navigate the catalog as if it were a folder tree: one metadata field
+becomes the "grouper" and each distinct value becomes a folder. It is a
+**mode of the Library screen** (not a new section) — inside a folder the
+same columns and the same actions of the normal listing apply.
 
-- [x] Reader para PDF single-column via `pdf-extract` (texto sequencial
-      reaproveitado pelo `layout::lay_out`). Aceitável para a maioria
-      de livros de ficção exportados em PDF. Cada página do PDF vira um
-      capítulo ("Page N"), então `:cN` salta pela página real do
-      documento. PDF criptografado é recusado com mensagem clara.
-- [x] Heurística para detectar multi-coluna (gaps verticais em colunas
-      separadas) — em texto multi-coluna o `pdf-extract` mistura linhas
-      entre colunas. Sinalizar como "best-effort: layout não preservado"
-      e seguir mesmo assim, ou pedir conversão para EPUB. Implementado o
-      ramo "seguir mesmo assim": linha de aviso em itálico no topo de
-      cada página afetada.
-- [x] Tabelas, fórmulas matemáticas, imagens vetoriais — ficam
-      degradadas. Documentar como limitação. Documentado no próprio
-      leitor: o aviso best-effort e as mensagens de erro (criptografado,
-      sem texto extraível) carregam a limitação até o usuário.
-- [x] **Não usar `pdfium-render`**: exige runtime Pdfium em C++, o que
-      quebra a portabilidade "binário único" do cdx. `lopdf` (já dep)
-      é só para metadados; para texto, `pdf-extract` é o caminho.
+A folder's scope is **exact equality** (the "Jane Austen" folder contains
+only `author = 'Jane Austen'`), unlike the search filter, which is
+substring. `author` is a single column (a book falls in one folder); `tags`
+is many-to-many (a book appears in several folders).
 
-## v0.9.3 — Leitor: cache de conversão e abertura assíncrona
+- [x] `cdx groups --by author|tag|rating` — list the current catalog's
+      groups (value + book count), human and `--json` (JSONL, one object per
+      group; `value: null` in the catch-all group — no author / no tags / no
+      rating). An empty catalog prints nothing in `--json`.
+- [x] TUI: grouped mode in the Library — `g` opens the grouper selector
+      (Author / Tags / Rating / Off); the "folders" level lists value +
+      count (`↑↓`/`jk` navigate, Enter enters). The domain module
+      (`catalog::groups`) is shared with the CLI.
+- [x] TUI: inside a folder the table reuses the columns and actions of the
+      listing (inspect/edit/open/push/delete/columns/embed); a breadcrumb in
+      the header shows the current group and the count. `Esc` steps down one
+      layer at a time: clear the filter → back to folders → leave grouping →
+      back to the welcome.
+- [x] TUI: `/` inside a folder filters the group's books in memory, without
+      widening the folder's exact scope.
+- [x] Group also by `publisher`/`language`/`series`/`format` — reuses the
+      exact `books_in_group` path (does not depend on `SearchFilters`); the
+      CLI (`cdx groups --by …`) and the TUI's `g` selector gain the new
+      options.
 
-A conversão (PDF principalmente) é cara; reabrir um livro não deve
-pagar esse custo de novo, nem congelar a TUI na primeira vez.
+## v1.0 — Stable
 
-- [x] Cache em disco do resultado da conversão (PDF/EPUB/MOBI/AZW3)
-      no XDG cache dir (`~/.cache/cdx/<hash-do-catálogo>/<id>.json`);
-      invalidação por mtime + tamanho do arquivo fonte + versão de
-      schema. Falha de cache nunca quebra a abertura — fallback
-      silencioso para a conversão. TXT/MD ficam de fora (parse é tão
-      rápido quanto ler o cache).
-- [x] Conversão roda em thread de fundo com tela de loading animada
-      ("Opening <título>…"); a TUI continua responsiva e `Esc`
-      cancela a abertura voltando pra biblioteca.
+First stable version: freezes the feature set above and focuses on
+**distribution and discovery**. No crates.io package — distribution is via
+prebuilt binary (install script + self-update). The milestones above
+(v0.1–v0.11) document what already goes into 1.0.
 
-## v0.10 — Anotações e marcações
+- [x] CI on GitHub Actions: `cargo fmt --check` + `cargo clippy
+      --all-targets -- -D warnings` + `cargo test`, on the stable toolchain
+      and on MSRV 1.80.
+- [x] Release workflow: build the binaries per `v*` tag
+      (`x86_64-unknown-linux-musl` static + `aarch64-apple-darwin` +
+      `x86_64-apple-darwin`) and automatically create the GitHub Release
+      with notes generated from the commits/PRs.
+- [x] `install.sh` — detect OS/architecture, download the binary from the
+      latest release, verify the SHA-256 checksum, and install to
+      `~/.local/bin` (override via `$CDX_INSTALL_DIR`); documented in the
+      README and the docs.
+- [x] `cdx update` — check the latest release on GitHub and install the new
+      version over the current binary (`--check` only reports; `--yes` skips
+      the confirmation).
+- [x] `cdx completions <shell>` — generate the completion script for
+      bash/zsh/fish (and the other `clap_complete` shells).
+- [x] Documentation site (mdBook + GitHub Pages) covering installation and
+      each feature area.
+- [x] README with installation, quickstart, updating, and a link to the
+      docs.
 
-Highlights, notas e bookmarks como dado de primeira classe no
-catálogo: importados do Kindle e/ou criados no leitor da TUI. Retoma
-a seleção visual (`v`) e os bookmarks que a v0.9 deixou em defer.
+## Post-1.0 — Future
 
-- [ ] Migration `0008_annotations.sql` — tabela `annotations`
-      (`book_id`, `kind` highlight|note|bookmark, `chapter`, `offset`,
-      `text` trecho marcado, `note` comentário opcional, `source`
-      kindle|cdx, `created_at`); índice por `book_id`.
-- [ ] `cdx import clippings <path>` — parseia o `My Clippings.txt`
-      (registros delimitados por `==========`: título/autor, tipo,
-      localização, timestamp, texto) e importa todas as anotações para
-      o DB, casando cada uma com o livro do catálogo por título/autor
-      (não-casadas viram aviso, não erro). `source = kindle`. `--json`
-      resume o que entrou. TUI: fluxo de import equivalente.
-- [ ] `cdx annotations ls <id|título>` — lista anotações de um livro
-      (humano + `--json`); flag `--source kindle|cdx` filtra a origem.
-- [ ] TUI leitor: criar marcação via seleção visual (`v` + movimento,
-      Enter confirma) e nota (input de comentário sobre o trecho
-      selecionado) — persiste com `source = cdx`.
-- [ ] TUI leitor: navegar anotações — lista/modal das marcações do
-      livro com salto pro trecho correspondente; teclas de pular entre
-      marcações documentadas no `?`.
-- [ ] TUI leitor: destacar visualmente a origem — marcações importadas
-      do Kindle e marcações criadas no codex usam estilos distintos
-      (via `src/reader/style.rs`).
-- [ ] Export de anotações em formato neutro (Markdown/JSON), agrupado
-      por livro e separando origem Kindle vs codex.
+Milestones and items that fell outside the 1.0 scope. They land in later
+releases according to priority.
 
-Exploração (best-effort, pode escorregar pra backlog):
+### v1.1 — Format conversion
 
-- [ ] Tentar reexportar pro Kindle as anotações criadas só no codex,
-      reusando código opensource (plugins do Calibre, parsers de
-      sidecar `.sdr`/`.pds`/`.mbp`). Formato proprietário, amarrado a
-      ASIN/checksum do arquivo e instável entre firmwares — sem
-      garantia de round-trip. Documentar até onde dá pra ir.
+- [ ] `cdx convert <id> --to epub|mobi|azw3` (delegating to Calibre's
+      `ebook-convert` if available)
+- [ ] Detect the absence of the external dependency with a clear message
 
-## v0.11 — Navegação por grupos (browse)
+### v1.2 — Other ereaders
 
-Navegar o catálogo como se fosse uma árvore de pastas: um campo de
-metadado vira o "agrupador" e cada valor distinto vira uma pasta. É um
-**modo da própria tela Library** (não uma seção nova) — dentro de uma
-pasta valem as mesmas colunas e as mesmas ações da listagem normal.
+- [ ] Kobo support (folder structure, local DB)
+- [ ] A "device driver" abstraction to ease PocketBook/Boox in the future
 
-O escopo de uma pasta é **igualdade exata** (a pasta "Jane Austen"
-contém só `author = 'Jane Austen'`), diferente do filtro de busca, que é
-substring. `author` é coluna única (um livro cai em uma pasta);
-`tags` é many-to-many (um livro aparece em várias pastas).
+### v1.3 — Import / interop
 
-- [x] `cdx groups --by author|tag|rating` — lista os grupos do catálogo
-      atual (valor + contagem de livros), humano e `--json` (JSONL, um
-      objeto por grupo; `value: null` no grupo catch-all — sem autor /
-      sem tags / sem rating). Catálogo vazio em `--json` não imprime nada.
-- [x] TUI: modo agrupado na Library — `g` abre o seletor de agrupador
-      (Author / Tags / Rating / Off); o nível de "pastas" lista valor +
-      contagem (`↑↓`/`jk` navegam, Enter entra). O módulo de domínio
-      (`catalog::groups`) é compartilhado com o CLI.
-- [x] TUI: dentro de uma pasta a tabela reusa as colunas e ações da
-      listagem (inspect/edit/open/push/delete/columns/embed); um
-      breadcrumb no cabeçalho mostra o grupo atual e a contagem. `Esc`
-      desce uma camada por vez: limpa o filtro → volta às pastas →
-      sai do agrupamento → volta à welcome.
-- [x] TUI: `/` dentro de uma pasta filtra os livros do grupo em memória,
-      sem alargar o escopo exato da pasta.
-- [x] agrupar também por `publisher`/`language`/`series`/`format` — reusa o
-      caminho exato de `books_in_group` (não depende de `SearchFilters`); o CLI
-      (`cdx groups --by …`) e o seletor `g` da TUI ganham as novas opções.
+- [ ] `cdx import calibre <path>` — import from an existing Calibre library
+      (reads `metadata.db`)
+- [ ] Export a cdx catalog in a neutral format (JSON/CSV)
 
-## v1.0 — Estável
+### v1.4 — Annotations and marks
+
+Highlights, notes, and bookmarks as first-class data in the catalog:
+imported from the Kindle and/or created in the TUI reader. Picks up the
+visual selection (`v`) and the bookmarks that v0.9 left deferred.
+
+- [ ] Migration `0008_annotations.sql` — `annotations` table (`book_id`,
+      `kind` highlight|note|bookmark, `chapter`, `offset`, `text` the marked
+      excerpt, `note` optional comment, `source` kindle|cdx, `created_at`);
+      index by `book_id`.
+- [ ] `cdx import clippings <path>` — parse `My Clippings.txt` (records
+      delimited by `==========`: title/author, type, location, timestamp,
+      text) and import all annotations into the DB, matching each with the
+      catalog's book by title/author (unmatched ones become a warning, not
+      an error). `source = kindle`. `--json` summarizes what went in. TUI: an
+      equivalent import flow.
+- [ ] `cdx annotations ls <id|title>` — list a book's annotations (human +
+      `--json`); a `--source kindle|cdx` flag filters the origin.
+- [ ] TUI reader: create a mark via visual selection (`v` + movement, Enter
+      confirms) and a note (a comment input over the selected excerpt) —
+      persists with `source = cdx`.
+- [ ] TUI reader: navigate annotations — a list/modal of the book's marks
+      with a jump to the corresponding excerpt; keys to jump between marks
+      documented in `?`.
+- [ ] TUI reader: visually highlight the origin — marks imported from the
+      Kindle and marks created in codex use distinct styles (via
+      `src/reader/style.rs`).
+- [ ] Export annotations in a neutral format (Markdown/JSON), grouped by
+      book and separating Kindle vs codex origin.
+
+Exploration (best-effort, may slip to the backlog):
+
+- [ ] Try to re-export to the Kindle the annotations created only in codex,
+      reusing open-source code (Calibre plugins, `.sdr`/`.pds`/`.mbp`
+      sidecar parsers). A proprietary format, tied to the file's
+      ASIN/checksum and unstable across firmwares — no round-trip guarantee.
+      Document how far it can go.
+
+### Deferred extras
 
 - [ ] Man page (`cdx.1`)
-- [ ] Shell completions (bash/zsh/fish) — inclui completion **dinâmica**
-      de argumentos posicionais (`cdx inspect <TAB>`, `cdx rm <TAB>`)
-      consultando o catálogo via `clap_complete::engine::ArgValueCompleter`
-- [ ] Pacote `cargo install codex` publicado no crates.io
-- [ ] CI: testes + clippy + fmt
-- [ ] Cobertura mínima de testes de integração
+- [ ] **Dynamic** completion of positional arguments (`cdx inspect <TAB>`,
+      `cdx rm <TAB>`) querying the catalog via
+      `clap_complete::engine::ArgValueCompleter` (`unstable-dynamic`
+      feature).
+- [ ] Broader integration-test coverage (beyond the CI gate).
 
-## Backlog (sem milestone)
+## Backlog (no milestone)
 
-- Servidor HTTP read-only pra browsear o catálogo de outro dispositivo
-- Sync via Wi-Fi (sem cabo)
+- Read-only HTTP server to browse the catalog from another device
+- Wi-Fi sync (no cable)
 - News download / RSS-to-EPUB (à la Calibre recipes)
 - Plugin system
