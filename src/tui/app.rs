@@ -22,6 +22,10 @@ use crate::tui::too_small;
 use crate::tui::welcome;
 use crate::tui::widgets::{outer_block, render_default_footer, render_status, StatusMessage};
 
+// Exactly one screen is ever live at a time (held once in the app state), so the
+// size spread between variants costs nothing in practice. Boxing the central
+// Library/Duplicates state would only add indirection to the hottest screens.
+#[allow(clippy::large_enum_variant)]
 pub enum Screen {
     Welcome(welcome::State),
     Catalogs(catalogs::State),

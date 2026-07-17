@@ -812,6 +812,10 @@ pub fn empty_group_label(by: GroupBy) -> &'static str {
         GroupBy::Author => "(no author)",
         GroupBy::Tag => "(untagged)",
         GroupBy::Rating => "(unrated)",
+        GroupBy::Publisher => "(no publisher)",
+        GroupBy::Language => "(no language)",
+        GroupBy::Series => "(no series)",
+        GroupBy::Format => "(unknown format)",
     }
 }
 

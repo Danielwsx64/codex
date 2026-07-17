@@ -461,7 +461,7 @@ fn move_to_line_edge(state: &mut State, edge: LineEdge) {
     let line_len = layout.line_char_count(line_idx);
     state.cursor_offset = match edge {
         LineEdge::Start => line_start,
-        LineEdge::End => line_start + line_len.saturating_sub(1).max(0),
+        LineEdge::End => line_start + line_len.saturating_sub(1),
     };
 }
 
@@ -472,7 +472,7 @@ fn move_cursor_horizontal(state: &mut State, delta: i64) {
         .as_ref()
         .expect("layout populated");
     let line_len = layout.line_char_count(line_idx);
-    let new_col = (col as i64 + delta).clamp(0, line_len.saturating_sub(1).max(0) as i64) as usize;
+    let new_col = (col as i64 + delta).clamp(0, line_len.saturating_sub(1) as i64) as usize;
     state.cursor_offset = layout.line_offset(line_idx) + new_col;
 }
 
@@ -485,7 +485,7 @@ fn move_cursor_vertical(state: &mut State, delta: i64) {
     let last_line = layout.line_count().saturating_sub(1);
     let new_line = (line_idx as i64 + delta).clamp(0, last_line as i64) as usize;
     let target_line_len = layout.line_char_count(new_line);
-    let new_col = col.min(target_line_len.saturating_sub(1).max(0));
+    let new_col = col.min(target_line_len.saturating_sub(1));
     state.cursor_offset = layout.line_offset(new_line) + new_col;
 }
 
@@ -828,7 +828,7 @@ fn styled_line_with_cursor(
         ));
     }
     let total = line.char_count();
-    let col = cursor_col.min(total.saturating_sub(1).max(0));
+    let col = cursor_col.min(total.saturating_sub(1));
 
     let mut out_spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 2);
     let mut consumed = 0usize;

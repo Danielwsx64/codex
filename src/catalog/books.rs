@@ -1728,10 +1728,10 @@ mod tests {
         let src = dir.path().join("book.epub");
         fs::copy(fixture("sample.epub"), &src).unwrap();
 
-        let first = handle_add(&mut conn, &cat, &[src.clone()], false);
+        let first = handle_add(&mut conn, &cat, std::slice::from_ref(&src), false);
         assert!(matches!(first.rows[0].status, AddStatus::Imported));
 
-        let second = handle_add(&mut conn, &cat, &[src.clone()], false);
+        let second = handle_add(&mut conn, &cat, std::slice::from_ref(&src), false);
         assert!(matches!(
             second.rows[0].status,
             AddStatus::Duplicate { existing_id: 1 }
@@ -2042,8 +2042,8 @@ mod tests {
         let src = dir.path().join("book.epub");
         fs::copy(fixture("sample.epub"), &src).unwrap();
 
-        handle_add(&mut conn, &cat, &[src.clone()], false);
-        let forced = handle_add(&mut conn, &cat, &[src.clone()], true);
+        handle_add(&mut conn, &cat, std::slice::from_ref(&src), false);
+        let forced = handle_add(&mut conn, &cat, std::slice::from_ref(&src), true);
         assert!(matches!(forced.rows[0].status, AddStatus::Imported));
         assert_eq!(handle_ls(&conn).unwrap().len(), 2);
     }

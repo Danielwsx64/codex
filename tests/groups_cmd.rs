@@ -21,6 +21,33 @@ fn insert_book(
     conn.last_insert_rowid()
 }
 
+// Insert with explicit scalar-metadata columns so publisher/language/series/
+// format grouping can be exercised from the CLI.
+fn insert_book_meta(
+    lib: &std::path::Path,
+    title: &str,
+    publisher: Option<&str>,
+    language: Option<&str>,
+    series: Option<&str>,
+    format: &str,
+) -> i64 {
+    let conn = codex::catalog::open_existing(lib).expect("open catalog");
+    conn.execute(
+        "INSERT INTO books (title, format, file_path, publisher, language, series_name)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            title,
+            format,
+            format!("books/x/{title}.{format}"),
+            publisher,
+            language,
+            series
+        ],
+    )
+    .expect("insert book");
+    conn.last_insert_rowid()
+}
+
 fn add_tag(lib: &std::path::Path, book_id: i64, name: &str) {
     let conn = codex::catalog::open_existing(lib).expect("open catalog");
     conn.execute(
@@ -168,6 +195,97 @@ fn groups_empty_catalog_json_is_silent() {
         .assert()
         .success()
         .stdout(predicate::str::contains("No groups found."));
+}
+
+#[test]
+fn groups_by_publisher_human_and_json() {
+    let f = Fixture::new();
+    let lib = f.init_lib();
+    insert_book_meta(&lib, "A", Some("Penguin"), None, None, "epub");
+    insert_book_meta(&lib, "B", Some("Penguin"), None, None, "epub");
+    insert_book_meta(&lib, "C", None, None, None, "epub");
+
+    f.cdx()
+        .args(["groups", "--by", "publisher"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Penguin"))
+        .stdout(predicate::str::contains("(no publisher)"));
+
+    let out = f
+        .cdx_json()
+        .args(["groups", "--by", "publisher"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "named publisher + catch-all");
+    let penguin: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(penguin["value"], "Penguin");
+    assert_eq!(penguin["count"], 2);
+    let none: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+    assert!(none["value"].is_null());
+}
+
+#[test]
+fn groups_by_language_json_sorts_alpha() {
+    let f = Fixture::new();
+    let lib = f.init_lib();
+    insert_book_meta(&lib, "A", None, Some("pt-BR"), None, "epub");
+    insert_book_meta(&lib, "B", None, Some("en"), None, "epub");
+
+    let out = f
+        .cdx_json()
+        .args(["groups", "--by", "language"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2);
+    let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(first["value"], "en", "alphabetical order");
+}
+
+#[test]
+fn groups_by_series_json() {
+    let f = Fixture::new();
+    let lib = f.init_lib();
+    insert_book_meta(&lib, "A", None, None, Some("Discworld"), "epub");
+    insert_book_meta(&lib, "B", None, None, Some("Discworld"), "epub");
+    insert_book_meta(&lib, "C", None, None, None, "epub");
+
+    let out = f
+        .cdx_json()
+        .args(["groups", "--by", "series"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2);
+    let disc: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(disc["value"], "Discworld");
+    assert_eq!(disc["count"], 2);
+}
+
+#[test]
+fn groups_by_format_has_no_catch_all() {
+    let f = Fixture::new();
+    let lib = f.init_lib();
+    insert_book_meta(&lib, "A", None, None, None, "epub");
+    insert_book_meta(&lib, "B", None, None, None, "pdf");
+    insert_book_meta(&lib, "C", None, None, None, "epub");
+
+    let out = f
+        .cdx_json()
+        .args(["groups", "--by", "format"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "epub + pdf, no catch-all");
+    let epub: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(epub["value"], "epub");
+    assert_eq!(epub["count"], 2);
 }
 
 #[test]

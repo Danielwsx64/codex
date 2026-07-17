@@ -92,11 +92,7 @@ fn parse_opf_metadata(opf: &[u8]) -> Metadata {
     let mut subjects: Vec<String> = Vec::new();
     let mut isbn: Option<String> = None;
 
-    loop {
-        let event = match reader.read_event_into(&mut buf) {
-            Ok(ev) => ev,
-            Err(_) => break,
-        };
+    while let Ok(event) = reader.read_event_into(&mut buf) {
         match event {
             Event::Eof => break,
             Event::Start(ref e) => {

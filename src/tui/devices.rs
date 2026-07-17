@@ -188,7 +188,7 @@ pub struct CatalogContext {
 #[derive(Debug)]
 pub enum View {
     List,
-    Books(BooksView),
+    Books(Box<BooksView>),
     Sync(Box<SyncView>),
 }
 
@@ -362,7 +362,7 @@ fn open_books(state: &mut State) -> DevicesAction {
     }
     match device::books::list(&conn, &row.serial, &mount) {
         Ok(rows) => {
-            state.view = View::Books(BooksView {
+            state.view = View::Books(Box::new(BooksView {
                 serial: row.serial,
                 alias: label,
                 mount,
@@ -370,7 +370,7 @@ fn open_books(state: &mut State) -> DevicesAction {
                 cursor: 0,
                 selected: BTreeSet::new(),
                 confirm: None,
-            });
+            }));
             DevicesAction::None
         }
         Err(err) => DevicesAction::Status(StatusMessage::error(err.to_string())),
@@ -1479,7 +1479,7 @@ mod tests {
     fn esc_from_books_returns_to_list() {
         let (_tmp, reg) = setup();
         let mut state = State::load(&reg);
-        state.view = View::Books(BooksView {
+        state.view = View::Books(Box::new(BooksView {
             serial: "AAA".to_string(),
             alias: "zeta".to_string(),
             mount: PathBuf::from("/nonexistent"),
@@ -1487,7 +1487,7 @@ mod tests {
             cursor: 0,
             selected: BTreeSet::new(),
             confirm: None,
-        });
+        }));
         let action = handle_key(&mut state, key(KeyCode::Esc));
         assert!(matches!(action, DevicesAction::None));
         assert!(matches!(state.view, View::List));
@@ -1543,7 +1543,7 @@ mod tests {
         drop(conn);
 
         let mut state = State::load(reg);
-        state.view = View::Books(BooksView {
+        state.view = View::Books(Box::new(BooksView {
             serial: "AAA".to_string(),
             alias: "zeta".to_string(),
             mount: mount.to_path_buf(),
@@ -1551,7 +1551,7 @@ mod tests {
             cursor: 0,
             selected: BTreeSet::new(),
             confirm: None,
-        });
+        }));
         state
     }
 
