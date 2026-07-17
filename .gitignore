@@ -16,3 +16,6 @@ Thumbs.db
 # cdx runtime data (caso usemos dir local em dev)
 .cdx-data/
 /tmp
+
+# seeded catalog for local TUI testing (scripts/seed.sh)
+/.seed/
