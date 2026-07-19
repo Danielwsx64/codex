@@ -2,7 +2,7 @@
 # cdx installer — downloads the latest release binary for this platform,
 # verifies its checksum, and installs it.
 #
-#   curl -fsSL https://raw.githubusercontent.com/Danielwsx64/codex/main/scripts/install.sh | sh
+#   curl -fsSL https://codex.daniel.ws/install.sh | sh
 #
 # Environment:
 #   CDX_INSTALL_DIR   install location (default: $HOME/.local/bin)

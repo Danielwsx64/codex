@@ -13,7 +13,7 @@ equivalent screen in the built-in terminal UI (`cdx tui`). The binary is called
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Danielwsx64/codex/main/scripts/install.sh | sh
+curl -fsSL https://codex.daniel.ws/install.sh | sh
 ```
 
 The script downloads the latest release binary for your platform (Linux x86_64,

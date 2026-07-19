@@ -6,7 +6,7 @@ package — you download the binary for your platform.
 ## Install script (recommended)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Danielwsx64/codex/main/scripts/install.sh | sh
+curl -fsSL https://codex.daniel.ws/install.sh | sh
 ```
 
 The script detects your OS and architecture, downloads the matching binary from
