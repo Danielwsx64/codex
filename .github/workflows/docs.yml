@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "scripts/install.sh"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -35,6 +36,10 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Build docs
         run: mdbook build docs
+      # Publish the installer alongside the docs so it can be piped straight
+      # from the custom domain: curl -fsSL https://codex.daniel.ws/install.sh | sh
+      - name: Publish install script
+        run: cp scripts/install.sh docs/book/install.sh
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
