@@ -10,7 +10,7 @@ use ratatui::Frame;
 use crate::catalog::handlers::{self, CatalogRow};
 use crate::config::Registry;
 use crate::tui::help::{Binding, Section};
-use crate::tui::widgets::{render_modal, StatusMessage};
+use crate::tui::widgets::{render_modal, selection_style, StatusMessage};
 
 const CATALOGS_BINDINGS: &[Binding] = &[
     Binding {
@@ -226,11 +226,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         .map(|row| ListItem::new(row_line(row)))
         .collect();
 
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items).highlight_style(selection_style());
     let mut list_state = ListState::default();
     if !state.rows.is_empty() {
         list_state.select(Some(state.cursor.min(state.rows.len() - 1)));
