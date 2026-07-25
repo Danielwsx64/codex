@@ -1,23 +1,37 @@
 name: Release
 
 on:
+  # Manual path: pushing a v* tag by hand still publishes a release.
   push:
     tags:
       - "v*"
+  # Automated path: called by auto-tag.yml after it creates the tag. A tag
+  # pushed with GITHUB_TOKEN does not trigger `on: push`, so the caller has to
+  # invoke this workflow directly.
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v1.2.0)"
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Fail fast if the pushed tag doesn't match the Cargo.toml version, so the
+  # Fail fast if the tag doesn't match the Cargo.toml version, so the
   # published binaries can never disagree with `cdx --version`.
   verify-version:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
       - name: Check tag matches Cargo.toml version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${TAG#v}"
           crate=$(cargo metadata --no-deps --format-version 1 \
             | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)
           echo "tag=$tag crate=$crate"
@@ -41,6 +55,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -94,6 +110,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # Passed explicitly: on the workflow_call path GITHUB_REF points at
+          # the caller's branch, so the tag can't be inferred.
+          tag_name: ${{ inputs.tag || github.ref_name }}
           # Notes are generated from the commits/PRs since the previous tag.
           generate_release_notes: true
           files: dist/*
