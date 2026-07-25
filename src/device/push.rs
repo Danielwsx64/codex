@@ -71,7 +71,7 @@ pub fn push(
         source,
     })?;
     let dest = documents.join(filename);
-    let bytes = std::fs::copy(&src, &dest).map_err(|source| Error::Io {
+    let bytes = copy_to_device(&src, &dest).map_err(|source| Error::Io {
         path: dest.clone(),
         source,
     })?;
@@ -98,6 +98,21 @@ pub fn push(
         device_path,
         bytes,
     })
+}
+
+// A mass-storage Kindle is a plain filesystem and never reaches the fallback.
+// An MTP one rejects the create with EOPNOTSUPP, which maps to `Unsupported`.
+fn copy_to_device(src: &Path, dest: &Path) -> std::io::Result<u64> {
+    match std::fs::copy(src, dest) {
+        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
+            tracing::debug!(dest = %dest.display(), "filesystem copy unsupported; using gio");
+            super::mtp::copy_out_of_band(src, dest)?;
+            // gio reports no byte count, and re-stating the destination doubles
+            // as proof the object actually landed on the device.
+            Ok(std::fs::metadata(dest)?.len())
+        }
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -192,6 +207,19 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM device_books", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rows, 1);
+    }
+
+    // The gio fallback needs a real MTP mount and so can't be exercised here;
+    // what matters is that an ordinary mount never leaves the filesystem API.
+    #[test]
+    fn copy_to_device_uses_the_filesystem_for_ordinary_mounts() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("book.epub");
+        fs::write(&src, b"payload").unwrap();
+        let dest = dir.path().join("dest.epub");
+
+        assert_eq!(copy_to_device(&src, &dest).unwrap(), 7);
+        assert_eq!(fs::read(&dest).unwrap(), b"payload");
     }
 
     #[test]

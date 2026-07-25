@@ -18,7 +18,7 @@ use crate::device::sync::{self, Conflict, SyncItem};
 use crate::device::sync_job::ApplyJob;
 use crate::tui::confirm;
 use crate::tui::help::{Binding, Section};
-use crate::tui::widgets::{centered_rect, render_modal, StatusMessage};
+use crate::tui::widgets::{centered_rect, render_modal, selection_style, StatusMessage};
 
 const LIST_BINDINGS: &[Binding] = &[
     Binding {
@@ -32,6 +32,10 @@ const LIST_BINDINGS: &[Binding] = &[
     Binding {
         keys: "r",
         desc: "rename device alias",
+    },
+    Binding {
+        keys: "R / F5",
+        desc: "rescan for devices",
     },
 ];
 
@@ -51,6 +55,10 @@ const BOOKS_BINDINGS: &[Binding] = &[
     Binding {
         keys: "s",
         desc: "sync with device",
+    },
+    Binding {
+        keys: "R / F5",
+        desc: "reload device books",
     },
     Binding {
         keys: "Esc",
@@ -332,9 +340,33 @@ fn handle_list_key(state: &mut State, key: KeyEvent) -> DevicesAction {
         KeyCode::Enter => open_books(state),
         KeyCode::Char('s') => open_sync(state),
         KeyCode::Char('r') => open_rename(state),
+        KeyCode::Char('R') | KeyCode::F(5) => rescan(state),
         KeyCode::Esc => DevicesAction::Back,
         KeyCode::Char(':') => DevicesAction::OpenPalette,
         _ => DevicesAction::None,
+    }
+}
+
+// The list is a snapshot taken when the screen opened, so plugging a device in
+// (or waiting for the desktop to mount an MTP one) needs an explicit rescan.
+// Rows are keyed by serial and reordered as devices come and go, so follow the
+// selected device rather than its index.
+fn rescan(state: &mut State) -> DevicesAction {
+    let selected = state.rows.get(state.cursor).map(|r| r.serial.clone());
+    state.refresh();
+    if let Some(serial) = selected {
+        if let Some(index) = state.rows.iter().position(|r| r.serial == serial) {
+            state.cursor = index;
+        }
+    }
+    match &state.load_error {
+        Some(err) => DevicesAction::Status(StatusMessage::error(err.clone())),
+        None => {
+            let connected = state.rows.iter().filter(|r| r.connected).count();
+            DevicesAction::Status(StatusMessage::info(format!(
+                "rescanned: {connected} device(s) connected"
+            )))
+        }
     }
 }
 
@@ -548,6 +580,16 @@ fn handle_books_key(state: &mut State, key: KeyEvent) -> DevicesAction {
             return open_sync_for(state, &serial, &alias, &mount);
         }
     }
+    // Same reason as the list rescan: the file list is a snapshot, and a push
+    // from another shell (or the device itself) leaves it stale.
+    if matches!(key.code, KeyCode::Char('R') | KeyCode::F(5)) {
+        return match reload_books(state) {
+            Ok(count) => DevicesAction::Status(StatusMessage::info(format!(
+                "reloaded: {count} book(s) on device"
+            ))),
+            Err(err) => DevicesAction::Status(StatusMessage::error(err)),
+        };
+    }
     let View::Books(view) = &mut state.view else {
         return DevicesAction::None;
     };
@@ -640,22 +682,43 @@ fn apply_clean(state: &mut State) -> DevicesAction {
         Ok(outcome) => outcome,
         Err(err) => return DevicesAction::Status(StatusMessage::error(err.to_string())),
     };
-    let rows = match device::books::list(&conn, &serial, &mount) {
-        Ok(rows) => rows,
-        Err(err) => return DevicesAction::Status(StatusMessage::error(err.to_string())),
-    };
     drop(conn);
-
-    if let View::Books(view) = &mut state.view {
-        view.rows = rows;
-        view.selected.clear();
-        view.cursor = view.cursor.min(view.rows.len().saturating_sub(1));
+    if let Err(err) = reload_books(state) {
+        return DevicesAction::Status(StatusMessage::error(err));
     }
     DevicesAction::Status(StatusMessage::info(format!(
         "removed {} books, freed {}",
         outcome.removed.len(),
         format_bytes(outcome.total_bytes)
     )))
+}
+
+// Re-read the open device's files. Shared by the rescan key and the post-clean
+// refresh: both leave the view showing rows that no longer exist on the device.
+// Marks for vanished files are dropped rather than cleared wholesale, so a
+// rescan doesn't cost the user a selection they were still building.
+fn reload_books(state: &mut State) -> Result<usize, String> {
+    let View::Books(view) = &state.view else {
+        return Ok(0);
+    };
+    let (serial, mount) = (view.serial.clone(), view.mount.clone());
+    let dir = state
+        .catalog
+        .as_ref()
+        .map(|c| c.dir.clone())
+        .ok_or_else(|| "no catalog selected".to_string())?;
+    let conn = catalog::open_existing(&dir).map_err(|e| e.to_string())?;
+    let rows = device::books::list(&conn, &serial, &mount).map_err(|e| e.to_string())?;
+    drop(conn);
+
+    let count = rows.len();
+    if let View::Books(view) = &mut state.view {
+        view.selected
+            .retain(|path| rows.iter().any(|r| &r.device_path == path));
+        view.rows = rows;
+        view.cursor = view.cursor.min(view.rows.len().saturating_sub(1));
+    }
+    Ok(count)
 }
 
 fn handle_sync_key(state: &mut State, key: KeyEvent) -> DevicesAction {
@@ -856,11 +919,7 @@ fn render_list(frame: &mut Frame<'_>, area: Rect, state: &State) {
         .iter()
         .map(|row| ListItem::new(device_row_line(row)))
         .collect();
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items).highlight_style(selection_style());
     let mut list_state = ListState::default();
     list_state.select(Some(state.cursor.min(state.rows.len() - 1)));
     frame.render_stateful_widget(list, layout[1], &mut list_state);
@@ -906,11 +965,7 @@ fn render_books(frame: &mut Frame<'_>, area: Rect, view: &BooksView) {
             ))
         })
         .collect();
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items).highlight_style(selection_style());
     let mut list_state = ListState::default();
     list_state.select(Some(view.cursor.min(view.rows.len() - 1)));
     frame.render_stateful_widget(list, layout[1], &mut list_state);
@@ -971,11 +1026,7 @@ fn render_sync(frame: &mut Frame<'_>, area: Rect, view: &SyncView) {
         .enumerate()
         .map(|(i, item)| ListItem::new(sync_item_line(item, view.selected.contains(&i))))
         .collect();
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items).highlight_style(selection_style());
     let mut list_state = ListState::default();
     if !view.items.is_empty() {
         list_state.select(Some(view.cursor.min(view.items.len() - 1)));
@@ -1310,6 +1361,7 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::catalog::handlers;
+    use crate::tui::widgets::StatusKind;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -1510,6 +1562,98 @@ mod tests {
         assert!(captures_text_input(&state));
     }
 
+    // Line-builder assertions can't catch this class of bug: the row's spans and
+    // the list's highlight are each fine on their own and only collide once
+    // rendered together. So render for real and require every painted cell on
+    // the selection bar to differ from its own background. A disconnected device
+    // is the worst case — its label *and* serial are both muted.
+    #[test]
+    fn selected_device_row_is_never_invisible() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (_dir, reg) = setup();
+        let mut state = State::load(&reg);
+        assert!(!state.rows.is_empty(), "setup seeds two known devices");
+        state.cursor = 0;
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 10)).unwrap();
+        terminal
+            .draw(|frame| render_list(frame, frame.area(), &state))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let mut checked = 0;
+        for cell in buffer.content() {
+            // Only the highlighted row paints a background; everything else
+            // leaves it at Reset and is legible by definition.
+            if cell.bg == Color::Reset || cell.symbol().trim().is_empty() {
+                continue;
+            }
+            assert_ne!(
+                cell.fg,
+                cell.bg,
+                "`{}` is invisible on the selection bar",
+                cell.symbol()
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "expected a highlighted row to inspect");
+    }
+
+    #[test]
+    fn rescan_reports_the_connected_count() {
+        let (_dir, reg) = setup();
+        let mut state = State::load(&reg);
+
+        let action = handle_key(&mut state, key(KeyCode::Char('R')));
+        match action {
+            DevicesAction::Status(status) => {
+                assert_eq!(status.text, "rescanned: 0 device(s) connected");
+                assert!(matches!(status.kind, StatusKind::Info));
+            }
+            _ => panic!("expected a status"),
+        }
+    }
+
+    #[test]
+    fn f5_rescans_like_shift_r() {
+        let (_dir, reg) = setup();
+        let mut state = State::load(&reg);
+        assert!(matches!(
+            handle_key(&mut state, key(KeyCode::F(5))),
+            DevicesAction::Status(_)
+        ));
+    }
+
+    #[test]
+    fn rescan_follows_the_selected_device_across_a_reorder() {
+        let (_dir, reg) = setup();
+        let mut state = State::load(&reg);
+        // Rows sort by alias: alpha (BBB), zeta (AAA).
+        state.cursor = 1;
+        assert_eq!(state.rows[state.cursor].serial, "AAA");
+
+        // Renaming the other device flips the order under the cursor.
+        let entry = reg.resolve(None).unwrap();
+        let conn = catalog::open_existing(&entry.path).unwrap();
+        devices::handle_alias(&conn, "BBB", "zzz").unwrap();
+        drop(conn);
+
+        handle_key(&mut state, key(KeyCode::Char('R')));
+        assert_eq!(state.cursor, 0);
+        assert_eq!(state.rows[state.cursor].serial, "AAA");
+    }
+
+    #[test]
+    fn rescan_does_not_leave_the_screen() {
+        let (_dir, reg) = setup();
+        let mut state = State::load(&reg);
+        handle_key(&mut state, key(KeyCode::Char('R')));
+        assert!(matches!(state.view, View::List));
+        assert!(state.rename.is_none());
+    }
+
     // Build a Devices state sitting on a books view backed by a real temp mount
     // with two synced epubs. `setup()` only makes disconnected devices and the
     // USB scan is disabled, so we construct the `View::Books` directly (as the
@@ -1560,6 +1704,45 @@ mod tests {
             View::Books(v) => v,
             _ => panic!("expected a books view"),
         }
+    }
+
+    #[test]
+    fn rescan_in_books_view_picks_up_a_new_file() {
+        let (_tmp, reg) = setup();
+        let mount = tempdir().unwrap();
+        let mut state = books_view(mount.path(), &reg);
+        assert_eq!(books(&state).rows.len(), 2);
+
+        fs::write(mount.path().join("documents/Endymion.epub"), b"more bytes").unwrap();
+
+        let action = handle_key(&mut state, key(KeyCode::Char('R')));
+        assert_eq!(books(&state).rows.len(), 3);
+        match action {
+            DevicesAction::Status(status) => {
+                assert_eq!(status.text, "reloaded: 3 book(s) on device");
+            }
+            _ => panic!("expected a status"),
+        }
+    }
+
+    #[test]
+    fn rescan_in_books_view_drops_marks_for_vanished_files() {
+        let (_tmp, reg) = setup();
+        let mount = tempdir().unwrap();
+        let mut state = books_view(mount.path(), &reg);
+        // Mark both, then delete one behind the TUI's back.
+        handle_key(&mut state, key(KeyCode::Char(' ')));
+        handle_key(&mut state, key(KeyCode::Char('j')));
+        handle_key(&mut state, key(KeyCode::Char(' ')));
+        assert_eq!(books(&state).selected.len(), 2);
+
+        let gone = books(&state).rows[0].device_path.clone();
+        fs::remove_file(mount.path().join(&gone)).unwrap();
+
+        handle_key(&mut state, key(KeyCode::F(5)));
+        assert!(!books(&state).selected.contains(&gone));
+        assert_eq!(books(&state).selected.len(), 1, "the surviving mark stays");
+        assert!(books(&state).cursor < books(&state).rows.len());
     }
 
     #[test]

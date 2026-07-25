@@ -32,3 +32,14 @@ These are consistent across the whole TUI:
 | `?`            | Contextual help for the active screen                |
 
 Per-screen bindings beyond these are documented in each screen's `?` overlay.
+
+## Devices screen
+
+| Key       | Meaning                                                        |
+| --------- | -------------------------------------------------------------- |
+| `r`       | Rename the selected device's alias                              |
+| `R`, `F5` | Rescan — pick up devices connected since the screen opened      |
+| `s`       | Open the sync plan for the selected device                      |
+
+`R`/`F5` also works in the device's books view, where it re-reads the files on
+the device.

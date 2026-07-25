@@ -13,7 +13,7 @@ use crate::config::Registry;
 use crate::dedup::{self, DetectBy, SuggestionReason};
 use crate::tui::confirm;
 use crate::tui::help::{Binding, Section};
-use crate::tui::widgets::StatusMessage;
+use crate::tui::widgets::{selection_style, StatusMessage};
 
 const BINDINGS: &[Binding] = &[
     Binding {
@@ -376,11 +376,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         .iter()
         .map(|item| ListItem::new(flat_line(state, item)))
         .collect();
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items).highlight_style(selection_style());
     let mut list_state = ListState::default();
     list_state.select(Some(state.cursor.min(state.flat.len() - 1)));
     frame.render_stateful_widget(list, layout[1], &mut list_state);

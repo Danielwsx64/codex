@@ -24,7 +24,7 @@ use crate::embed::job::Job;
 use crate::embed::{self, EmbedOutcome};
 use crate::import;
 use crate::tui::help::{Binding, Section};
-use crate::tui::widgets::{centered_rect, render_modal, StatusMessage};
+use crate::tui::widgets::{centered_rect, render_modal, selection_style, StatusMessage};
 
 const TABLE_BINDINGS: &[Binding] = &[
     Binding {
@@ -1889,11 +1889,9 @@ fn render_group_list(frame: &mut Frame<'_>, area: Rect, state: &State) {
         })
         .collect();
     let widths = [Constraint::Min(20), Constraint::Length(8)];
-    let table = Table::new(rows, widths).header(header).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    let table = Table::new(rows, widths)
+        .header(header)
+        .highlight_style(selection_style());
     let mut s = TableState::default();
     s.select(Some(
         state.group_cursor.min(state.groups.len().saturating_sub(1)),
@@ -1927,11 +1925,7 @@ fn render_group_chooser(frame: &mut Frame<'_>, area: Rect, cursor: usize) {
         .iter()
         .map(|(_, label)| ListItem::new(Line::from(format!(" {label}"))))
         .collect();
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items).highlight_style(selection_style());
     let mut list_state = ListState::default();
     list_state.select(Some(cursor.min(GROUP_OPTIONS.len() - 1)));
     frame.render_stateful_widget(list, inner, &mut list_state);
@@ -2041,11 +2035,9 @@ fn render_table(frame: &mut Frame<'_>, area: Rect, state: &State) {
     }
     widths.extend(columns.iter().map(|c| c.width()));
 
-    let table = Table::new(rows, widths).header(header).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    let table = Table::new(rows, widths)
+        .header(header)
+        .highlight_style(selection_style());
     let mut s = TableState::default();
     s.select(Some(state.cursor.min(state.rows.len().saturating_sub(1))));
     frame.render_stateful_widget(table, area, &mut s);
@@ -2119,11 +2111,7 @@ fn render_context_menu(frame: &mut Frame<'_>, area: Rect, state: &State, cursor:
         .iter()
         .map(|(_, label)| ListItem::new(Line::from(format!(" {label}"))))
         .collect();
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items).highlight_style(selection_style());
     let mut list_state = ListState::default();
     list_state.select(Some(cursor.min(MENU_ITEMS.len() - 1)));
     frame.render_stateful_widget(list, inner, &mut list_state);
@@ -2418,11 +2406,7 @@ fn render_tree_modal(frame: &mut Frame<'_>, area: Rect, tree: &AddTreeState) {
             ListItem::new(line)
         })
         .collect();
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items).highlight_style(selection_style());
     let mut list_state = ListState::default();
     if !tree.entries.is_empty() {
         list_state.select(Some(tree.cursor.min(tree.entries.len() - 1)));

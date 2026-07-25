@@ -1,11 +1,41 @@
 # Devices (Kindle sync)
 
-codex syncs with USB-mounted Kindles on Linux, with support for several devices
+codex syncs with USB-connected Kindles on Linux, with support for several devices
 connected at once. Each device is identified by the stable **serial** read from
 the USB descriptor; you can give it an **alias** and use that day-to-day.
 
 > Device sync is Linux-only. On other platforms the commands compile but detect
 > no devices.
+
+## Mass storage and MTP
+
+Kindles connect one of two ways, and codex handles both:
+
+- **USB mass storage** (Paperwhite 11 and older, Oasis, Voyage): the device shows
+  up as a normal disk and codex finds it in `/proc/mounts`.
+- **MTP** (Colorsoft, Scribe, Paperwhite 12): no disk appears at all. codex looks
+  instead at what **gvfs** has mounted under `/run/user/<uid>/gvfs/mtp:host=…`
+  and ties it back to the Amazon USB device by serial.
+
+codex only *discovers* MTP mounts — it never mounts or unmounts anything. If
+`cdx device ls` doesn't show an MTP Kindle, gvfs hasn't mounted it yet: open it
+once in a file manager, or run
+
+```sh
+gio mount mtp://<host>/     # `gio mount -l` lists the available hosts
+```
+
+Writing to an MTP device also needs the `gio` command (`libglib2.0-bin` on
+Debian/Ubuntu, `glib2` elsewhere). This is not a choice — gvfs cannot create a
+file on an MTP mount through ordinary filesystem calls, because the protocol
+needs the object size before the transfer begins. `cdx push` uses `gio copy` for
+that one step and reports a clear error if the command is missing. Every other
+operation (listing, reading, `pull`, `clean`) goes through the filesystem as
+usual.
+
+MTP devices are also **exclusive**: only one program can hold one at a time. If
+Calibre or another MTP client has claimed the Kindle, gvfs won't have it mounted
+and codex won't see it.
 
 ## Selecting a device
 
@@ -55,6 +85,9 @@ conflicts. You confirm item by item (`y` apply / `n` skip / `a` accept the rest 
 ## In the TUI
 
 The **Devices** screen lists devices (`r` renames, `Enter` opens the device's
-books). Presence indicators (`both` / `local only` / `device only` / `modified`)
+books, `R` or `F5` rescans). The list is a snapshot taken when the screen opened,
+so rescan after plugging a device in — an MTP Kindle in particular only appears
+once gvfs has finished mounting it. In the books view `R`/`F5` re-reads the
+device's files. Presence indicators (`both` / `local only` / `device only` / `modified`)
 appear in the Library and device views. `p` in the Library pushes the selected
 book to the current device.

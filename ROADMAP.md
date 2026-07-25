@@ -180,9 +180,8 @@ A book's identity between catalog and device has two layers:
 - [x] Detect Kindles mounted via USB mass storage (Linux), supporting
       multiple simultaneous devices; the stable identity of each device is
       the **serial** read from the USB descriptor in sysfs (`idVendor` 1949
-      = Amazon/Lab126 is the gate; `documents/` + `system/` on the mount are
-      just a sanity check). On other OSes detection compiles and returns an
-      empty list
+      = Amazon/Lab126 is the gate; `documents/` on the mount is just a sanity
+      check). On other OSes detection compiles and returns an empty list
 - [x] Migration `0007_devices.sql` — `devices` table (`serial` PK, `alias`,
       `last_seen_at`) + `device_books` table (sync state: `device_serial`,
       `book_id`, `device_path`, `hash`, `size`, `mtime`, `synced_at`);
@@ -459,6 +458,26 @@ prebuilt binary (install script + self-update). The milestones above
 
 Milestones and items that fell outside the 1.0 scope. They land in later
 releases according to priority.
+
+### v1.0.1 — MTP Kindles and device rescan
+
+The 2024+ Kindles (Colorsoft, Scribe, Paperwhite 12) dropped USB mass
+storage for MTP, so they expose no block device and the v0.4 detection
+never saw them.
+
+- [x] Detect MTP Kindles by matching the gvfs mounts under
+      `/run/user/<uid>/gvfs/mtp:host=…` against the Amazon USB devices in
+      sysfs, and report the storage directory (the one holding `documents/`)
+      as the mount so the rest of the device code is unchanged. A device
+      reachable both ways keeps its mass-storage mount. codex discovers
+      mounts, it never mounts: an unmounted device stays invisible
+- [x] `cdx push` falls back to `gio copy` when the filesystem rejects the
+      write — gvfs cannot create a file on an MTP mount through POSIX calls
+      (MTP needs the object size up front), and a missing `gio` gets a clear
+      message. Reads, `pull` and `clean` need no fallback
+- [x] TUI: `R` / `F5` rescans the Devices screen for newly connected devices
+      (keeping the cursor on the selected device across the reorder) and
+      re-reads the file list in the device's books view
 
 ### v1.1 — Format conversion
 

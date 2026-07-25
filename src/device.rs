@@ -11,6 +11,7 @@ pub mod books;
 pub mod clean;
 pub mod markers;
 pub mod mounts;
+pub mod mtp;
 pub mod presence;
 pub mod pull;
 pub mod push;
@@ -175,8 +176,33 @@ pub fn detect() -> Vec<DetectedDevice> {
 }
 
 fn collect(sys_root: &Path, mounts: &str) -> Vec<DetectedDevice> {
+    let entries = mounts::parse(mounts);
+    let mut found = collect_mass_storage(sys_root, &entries);
+    // Newer Kindles expose no block device at all, so they can only be reached
+    // through whatever gvfs has mounted for them. A device that somehow shows
+    // up both ways keeps its mass-storage mount: it is a real filesystem, so
+    // reads and writes there are cheaper and better behaved than over MTP.
+    let gvfs_bases: Vec<PathBuf> = entries
+        .iter()
+        .filter(|e| e.fstype == mtp::GVFS_FSTYPE)
+        .map(|e| e.mount_point.clone())
+        .collect();
+    for mount in mtp::collect(&gvfs_bases, &sysfs::amazon_devices(sys_root)) {
+        if found.iter().any(|d| d.serial == mount.serial) {
+            continue;
+        }
+        tracing::debug!(serial = %mount.serial, root = %mount.root.display(), "MTP device detected");
+        found.push(DetectedDevice {
+            serial: mount.serial,
+            mount_path: mount.root,
+        });
+    }
+    found
+}
+
+fn collect_mass_storage(sys_root: &Path, entries: &[mounts::MountEntry]) -> Vec<DetectedDevice> {
     let mut found: Vec<DetectedDevice> = Vec::new();
-    for entry in mounts::parse(mounts) {
+    for entry in entries.iter().cloned() {
         if !is_candidate(&entry) {
             continue;
         }
@@ -195,11 +221,11 @@ fn collect(sys_root: &Path, mounts: &str) -> Vec<DetectedDevice> {
             continue;
         }
         if !markers::looks_like_kindle(&entry.mount_point) {
-            // Vendor id is authoritative; the marker dirs are only a sanity
-            // note (firmware variations may lay the filesystem out differently).
+            // Vendor id is authoritative; the marker dir is only a sanity note
+            // (firmware variations may lay the filesystem out differently).
             tracing::debug!(
                 mount = %entry.mount_point.display(),
-                "Amazon device without documents/ + system/ markers"
+                "Amazon device without a documents/ marker"
             );
         }
         if found.iter().any(|d| d.serial == identity.serial) {
@@ -451,6 +477,71 @@ garbage-line
 ";
         let devices = collect(dir.path(), mounts);
         assert_eq!(devices.len(), 2);
+    }
+
+    // The sysfs shape MTP detection reads: a whole USB device, with no block
+    // node anywhere (that is exactly what makes these Kindles invisible to the
+    // mass-storage path).
+    fn fake_usb_bus_device(root: &Path, name: &str, vendor: &str, serial: &str) {
+        let dir = root.join("bus/usb/devices").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("idVendor"), format!("{vendor}\n")).unwrap();
+        fs::write(dir.join("serial"), format!("{serial}\n")).unwrap();
+        fs::write(dir.join("busnum"), "3\n").unwrap();
+        fs::write(dir.join("devnum"), "13\n").unwrap();
+    }
+
+    fn fake_gvfs_mount(root: &Path, host: &str, storage: &str) -> PathBuf {
+        let base = root.join("gvfs");
+        fs::create_dir_all(
+            base.join(format!("mtp:host={host}"))
+                .join(storage)
+                .join("documents"),
+        )
+        .unwrap();
+        base
+    }
+
+    #[test]
+    fn collect_finds_an_mtp_kindle_with_no_block_device() {
+        let dir = tempdir().unwrap();
+        fake_usb_bus_device(dir.path(), "3-5", "1949", "MTP_SERIAL");
+        let base = fake_gvfs_mount(dir.path(), "Amazon_Kindle_Colorsoft_MTP_SERIAL", "Internal");
+        let mounts = format!(
+            "/dev/nvme0n1p2 / ext4 rw 0 0\ngvfsd-fuse {} fuse.gvfsd-fuse rw 0 0\n",
+            base.display()
+        );
+        let devices = collect(dir.path(), &mounts);
+        assert_eq!(
+            devices,
+            vec![DetectedDevice {
+                serial: "MTP_SERIAL".to_string(),
+                mount_path: base.join("mtp:host=Amazon_Kindle_Colorsoft_MTP_SERIAL/Internal"),
+            }]
+        );
+    }
+
+    #[test]
+    fn collect_prefers_the_mass_storage_mount_over_mtp() {
+        let dir = tempdir().unwrap();
+        fake_usb_tree(dir.path(), "sdb", "sdb1", "1949", "KINDLE_SERIAL");
+        fake_usb_bus_device(dir.path(), "3-5", "1949", "KINDLE_SERIAL");
+        let base = fake_gvfs_mount(dir.path(), "Amazon_Kindle_KINDLE_SERIAL", "Internal");
+        let mounts = format!(
+            "/dev/sdb1 /media/user/Kindle vfat rw 0 0\ngvfsd-fuse {} fuse.gvfsd-fuse rw 0 0\n",
+            base.display()
+        );
+        let devices = collect(dir.path(), &mounts);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].mount_path, PathBuf::from("/media/user/Kindle"));
+    }
+
+    #[test]
+    fn collect_ignores_gvfs_when_no_amazon_device_is_enumerated() {
+        let dir = tempdir().unwrap();
+        let base = fake_gvfs_mount(dir.path(), "Amazon_Kindle_MTP_SERIAL", "Internal");
+        let mounts = format!("gvfsd-fuse {} fuse.gvfsd-fuse rw 0 0\n", base.display());
+        assert!(collect(dir.path(), &mounts).is_empty());
     }
 
     #[test]

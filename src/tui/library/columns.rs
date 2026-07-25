@@ -10,7 +10,7 @@ use ratatui::Frame;
 use crate::catalog;
 use crate::catalog::columns::LibraryColumn;
 use crate::catalog::settings;
-use crate::tui::widgets::centered_rect;
+use crate::tui::widgets::{centered_rect, selection_style};
 
 #[derive(Debug, Clone)]
 pub struct State {
@@ -133,11 +133,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
             ]))
         })
         .collect();
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items).highlight_style(selection_style());
     let mut list_state = ListState::default();
     list_state.select(Some(state.cursor.min(LibraryColumn::ALL.len() - 1)));
     frame.render_stateful_widget(list, layout[1], &mut list_state);

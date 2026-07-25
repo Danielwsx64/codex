@@ -23,6 +23,19 @@ pub fn is_submit_key(key: &KeyEvent) -> bool {
     )
 }
 
+// The cursor row in every list and table. ratatui applies a highlight by
+// patching each cell, so a style that sets no foreground leaves each span's own
+// colour in place — and `DarkGray` is also our muted-text colour, which would
+// then render invisible against this bar. Forcing the foreground is what keeps
+// the selected row readable; the trade-off is that the semantic accents (green
+// connected, cyan current, yellow modified) flatten to white on that one row.
+pub fn selection_style() -> Style {
+    Style::default()
+        .fg(Color::White)
+        .bg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD)
+}
+
 #[derive(Debug, Clone)]
 pub struct StatusMessage {
     pub text: String,
@@ -156,5 +169,20 @@ mod tests {
             KeyCode::Char('a'),
             KeyModifiers::CONTROL
         )));
+    }
+
+    // The bug this guards: the highlight used to set only a background, so a
+    // span already painted in the muted colour (which is the same DarkGray)
+    // vanished into the bar. An explicit foreground is what prevents that, so a
+    // future edit must not drop it or make the two colours meet again.
+    #[test]
+    fn selection_style_forces_a_foreground_that_contrasts_with_its_bar() {
+        let style = selection_style();
+        assert!(
+            style.fg.is_some(),
+            "without a foreground each span keeps its own and can match the bar"
+        );
+        assert_ne!(style.fg, style.bg);
+        assert_ne!(style.fg, Some(Color::DarkGray), "DarkGray is muted text");
     }
 }

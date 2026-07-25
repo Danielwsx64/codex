@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
+use crate::tui::widgets::selection_style;
 use crate::tui::TerminalGuard;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -186,11 +187,7 @@ fn render_multi(frame: &mut Frame<'_>, area: Rect, state: &MultiState) {
             ListItem::new(Line::from(format!("{mark}{label}")))
         })
         .collect();
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items).highlight_style(selection_style());
     let mut list_state = ListState::default();
     if !state.labels.is_empty() {
         list_state.select(Some(state.cursor.min(state.labels.len() - 1)));
@@ -225,11 +222,7 @@ fn render(frame: &mut Frame<'_>, area: Rect, state: &State) {
         .iter()
         .map(|label| ListItem::new(Line::from(label.clone())))
         .collect();
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items).highlight_style(selection_style());
     let mut list_state = ListState::default();
     if !state.labels.is_empty() {
         list_state.select(Some(state.cursor.min(state.labels.len() - 1)));
